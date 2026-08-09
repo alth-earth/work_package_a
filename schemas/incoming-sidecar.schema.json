@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/arctic-route/incoming-sidecar.schema.json",
+  "title": "Work package A incoming sidecar",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["file", "data_type", "route_id", "issue_time", "valid_time", "source"],
+  "properties": {
+    "file": {"type": "string", "minLength": 1},
+    "data_type": {
+      "enum": [
+        "sea_ice_concentration", "sea_ice_type", "sea_ice_edge", "sea_ice_drift",
+        "sea_ice_thickness", "wave", "ocean_current", "water_level", "wind_field",
+        "temperature", "visibility", "bathymetry", "long_term_restricted_area"
+      ]
+    },
+    "route_id": {"type": "string", "minLength": 1},
+    "issue_time": {"type": "string", "format": "date-time"},
+    "valid_time": {"type": "string", "format": "date-time"},
+    "source": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "default": "1"},
+    "quality_flag": {"enum": ["good", "suspect", "degraded", "missing"]},
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "issue_time_evidence": {"$ref": "#/$defs/issueTimeEvidence"},
+        "source_time_index": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "forecast_reference_time": {"type": "string", "format": "date-time"},
+        "forecast_lead_hours": {"type": "number"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "issueTimeEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issue_time", "method", "authority", "reference",
+        "observed_at", "raw_value", "authoritative"
+      ],
+      "properties": {
+        "issue_time": {"type": "string", "format": "date-time"},
+        "method": {
+          "enum": [
+            "copernicus_catalogue", "http_last_modified", "dataset_attribute",
+            "explicit_catalog", "conservative_retrieval"
+          ]
+        },
+        "authority": {"type": "string", "minLength": 1},
+        "reference": {"type": "string", "minLength": 1},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "raw_value": {"type": "string"},
+        "authoritative": {"type": "boolean"}
+      }
+    }
+  }
+}

@@ -1,0 +1,33 @@
+# 这是元数据映射示例，不是可直接采用的发布时间真值。
+# issue_time 必须来自源产品目录、HTTP 响应或经确认的发布延迟规则。
+
+[sources.noaa_gfs]
+data_types = ["wind_field", "temperature", "visibility"]
+issue_time_policy = "http_last_modified_required"
+authority = "NOAA GFS/NOMADS"
+
+[sources.copernicus_marine]
+data_types = [
+  "sea_ice_concentration",
+  "sea_ice_drift",
+  "sea_ice_thickness",
+  "wave",
+  "ocean_current",
+  "water_level",
+]
+issue_time_policy = "catalog_required"
+catalog_method = "copernicusmarine.describe"
+
+[sources.osi_saf]
+data_types = ["sea_ice_type", "sea_ice_edge"]
+issue_time_policy = "catalog_required"
+catalog_method = "downloaded_file_http_last_modified"
+
+[sources.static]
+data_types = ["bathymetry", "long_term_restricted_area"]
+issue_time_policy = "source_http_or_attribute_required"
+
+[fallback]
+# false 是生产/历史回放默认值。true 仅用于接受更晚但安全的成功获取时刻；
+# 发布器会自动把该帧标为 suspect。
+allow_conservative_retrieval = false

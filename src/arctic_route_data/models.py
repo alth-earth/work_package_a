@@ -1,0 +1,180 @@
+"""Stable data contracts between normalized archives, A and the AB cache."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from datetime import datetime
+from enum import StrEnum
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any
+
+from arctic_route_data.errors import MetadataValidationError
+from arctic_route_data.timeutils import ensure_utc, isoformat_utc, parse_utc
+
+
+class DataCategory(StrEnum):
+    STATIC = "static"
+    SLOW = "slow"
+    DYNAMIC = "dynamic"
+    EVENT = "event"
+
+
+class QualityFlag(StrEnum):
+    GOOD = "good"
+    SUSPECT = "suspect"
+    DEGRADED = "degraded"
+    MISSING = "missing"
+
+
+QUALITY_RANK: dict[QualityFlag, int] = {
+    QualityFlag.GOOD: 3,
+    QualityFlag.SUSPECT: 2,
+    QualityFlag.DEGRADED: 1,
+    QualityFlag.MISSING: 0,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestRecord:
+    data_id: str
+    data_type: str
+    category: DataCategory
+    route_id: str
+    variables: tuple[str, ...]
+    issue_time: datetime
+    valid_time: datetime
+    ingest_time: datetime
+    bbox: tuple[float, float, float, float]
+    crs: str
+    resolution: tuple[float | None, float | None]
+    source: str
+    quality_flag: QualityFlag
+    version: str
+    checksum: str
+    relative_path: str
+    size_bytes: int
+    media_type: str = "application/x-netcdf"
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for name in ("data_id", "data_type", "route_id", "source", "version", "relative_path"):
+            if not getattr(self, name).strip():
+                raise MetadataValidationError(f"{name} 不能为空")
+        if not self.variables:
+            raise MetadataValidationError("variables 不能为空")
+        if len(self.bbox) != 4 or self.bbox[0] > self.bbox[2] or self.bbox[1] > self.bbox[3]:
+            raise MetadataValidationError("bbox 必须为 (west, south, east, north)")
+        if len(self.checksum) != 64 or any(c not in "0123456789abcdef" for c in self.checksum):
+            raise MetadataValidationError("checksum 必须是小写 SHA-256")
+        if self.size_bytes < 0:
+            raise MetadataValidationError("size_bytes 不能为负数")
+        object.__setattr__(self, "issue_time", ensure_utc(self.issue_time, field="issue_time"))
+        object.__setattr__(self, "valid_time", ensure_utc(self.valid_time, field="valid_time"))
+        object.__setattr__(self, "ingest_time", ensure_utc(self.ingest_time, field="ingest_time"))
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+
+    def is_available_at(self, simulation_time: datetime) -> bool:
+        return self.issue_time <= ensure_utc(simulation_time, field="simulation_time")
+
+    def absolute_path(self, archive_root: Path) -> Path:
+        root = archive_root.resolve()
+        path = (root / self.relative_path).resolve()
+        if not path.is_relative_to(root):
+            raise MetadataValidationError("manifest 路径逃逸出 archive_root")
+        return path
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "data_id": self.data_id,
+            "data_type": self.data_type,
+            "category": self.category.value,
+            "route_id": self.route_id,
+            "variables": list(self.variables),
+            "issue_time": isoformat_utc(self.issue_time),
+            "valid_time": isoformat_utc(self.valid_time),
+            "ingest_time": isoformat_utc(self.ingest_time),
+            "bbox": list(self.bbox),
+            "crs": self.crs,
+            "resolution": list(self.resolution),
+            "source": self.source,
+            "quality_flag": self.quality_flag.value,
+            "version": self.version,
+            "checksum": self.checksum,
+            "relative_path": self.relative_path,
+            "size_bytes": self.size_bytes,
+            "media_type": self.media_type,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> ManifestRecord:
+        required = {
+            "data_id",
+            "data_type",
+            "category",
+            "route_id",
+            "variables",
+            "issue_time",
+            "valid_time",
+            "ingest_time",
+            "bbox",
+            "crs",
+            "resolution",
+            "source",
+            "quality_flag",
+            "version",
+            "checksum",
+            "relative_path",
+            "size_bytes",
+        }
+        missing = sorted(required - value.keys())
+        if missing:
+            raise MetadataValidationError(f"manifest 缺少字段: {', '.join(missing)}")
+        return cls(
+            data_id=str(value["data_id"]),
+            data_type=str(value["data_type"]),
+            category=DataCategory(value["category"]),
+            route_id=str(value["route_id"]),
+            variables=tuple(str(item) for item in value["variables"]),
+            issue_time=parse_utc(value["issue_time"], field="issue_time"),
+            valid_time=parse_utc(value["valid_time"], field="valid_time"),
+            ingest_time=parse_utc(value["ingest_time"], field="ingest_time"),
+            bbox=tuple(float(item) for item in value["bbox"]),  # type: ignore[arg-type]
+            crs=str(value["crs"]),
+            resolution=tuple(
+                None if item is None else float(item) for item in value["resolution"]
+            ),  # type: ignore[arg-type]
+            source=str(value["source"]),
+            quality_flag=QualityFlag(value["quality_flag"]),
+            version=str(value["version"]),
+            checksum=str(value["checksum"]),
+            relative_path=str(value["relative_path"]),
+            size_bytes=int(value["size_bytes"]),
+            media_type=str(value.get("media_type", "application/x-netcdf")),
+            metadata=dict(value.get("metadata", {})),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StandardDataFrame:
+    """A published AB frame. Payloads are treated as immutable after construction."""
+
+    record: ManifestRecord
+    payload: Any
+    generation_id: int
+
+    def __post_init__(self) -> None:
+        if self.generation_id < 0:
+            raise MetadataValidationError("generation_id 不能为负数")
+
+    @property
+    def estimated_bytes(self) -> int:
+        payload_bytes = getattr(self.payload, "nbytes", None)
+        if payload_bytes is None:
+            return self.record.size_bytes
+        return max(int(payload_bytes), 1)
+
+    def with_generation(self, generation_id: int) -> StandardDataFrame:
+        return replace(self, generation_id=generation_id)
