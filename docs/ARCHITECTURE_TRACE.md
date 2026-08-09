@@ -23,6 +23,8 @@
 
 下载、源站取时、预处理、拆帧、sidecar、归档和 manifest 都属于 A，并已进入统一执行链。A 发布的是可追溯的环境数据帧，不是风险图。
 
+A→B 的已实现接口见 [AB_INTERFACE.md](AB_INTERFACE.md)；尚未实现的 BC/CD 建议契约和验收清单见 [BCD_HANDOFF.md](BCD_HANDOFF.md)。
+
 以下截图问题由 B/C 解决，A 只提供其前置数据契约：
 
 - 7 天/60 天风险产品不是逐小时序列；

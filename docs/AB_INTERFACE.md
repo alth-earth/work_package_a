@@ -1,5 +1,7 @@
 # A → B（AB）接口
 
+本文描述已经实现的 A→B 接口。B→C 的 `RiskFrame`、C→D 的 `RoutePlan` 及后续 AI 开发清单见 [BCD_HANDOFF.md](BCD_HANDOFF.md)。
+
 ## 稳定对象
 
 `StandardDataFrame` 包含：
