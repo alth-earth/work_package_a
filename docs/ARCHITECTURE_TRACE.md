@@ -15,7 +15,7 @@
 | 静态/缓变/动态/事件回收 | `cache.py` | 类别保留量、过期和内存上限 |
 | B 消费期间不回收 | `cache.lease()` | 引用计数测试 |
 | 播放、暂停、倍速、跳转 | `clock.py` | 确定性时钟测试 |
-| 跳转重建、迟到任务隔离 | `service.py`、`cache.reset_generation()` | 集成测试和旧代次拒绝测试 |
+| 跳转重建、迟到任务隔离 | `service.py`、`cache.reset_generation()`；static 仅在 `issue_time <= 新 simulation_time` 时跨代复用 | 向过去跳转回归、无时刻安全清空和旧代次拒绝测试 |
 | 缺测明确告警 | `MissingDataAlert` | 不生成全零替代数据 |
 | 输出来源摘要和质量 | `ManifestRecord` | `source/quality/version/checksum/metadata` |
 

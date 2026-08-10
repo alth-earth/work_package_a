@@ -195,7 +195,17 @@ class PartitionedABCache:
                 if current is not None:
                     current.ref_count -= 1
 
-    def reset_generation(self, generation_id: int) -> None:
+    def reset_generation(
+        self,
+        generation_id: int,
+        *,
+        simulation_time: datetime | None = None,
+    ) -> None:
+        as_of = (
+            ensure_utc(simulation_time, field="simulation_time")
+            if simulation_time is not None
+            else None
+        )
         with self._lock:
             if generation_id <= self._generation_id:
                 raise ValueError("新 generation_id 必须严格递增")
@@ -203,6 +213,8 @@ class PartitionedABCache:
                 entry.frame.with_generation(generation_id)
                 for entry in self._entries.values()
                 if entry.frame.record.category is DataCategory.STATIC
+                and as_of is not None
+                and entry.frame.record.issue_time <= as_of
             ]
             self._entries.clear()
             self._partitions.clear()

@@ -215,6 +215,9 @@ B 开发时必须做到：
 - 计算任务携带 `generation_id`；模拟跳转后丢弃旧代次结果。
 - 不把 A 的 `quality_flag` 直接当成风险模型置信度。
 
+模拟跳转时 A 会清空动态、缓变和事件帧。static 帧只有在其
+`issue_time <= 新 simulation_time` 时才会改挂到新代次继续复用；向过去跳转不会保留当时尚未发布的静态资料。直接调用缓存重置接口却不提供新模拟时刻时，缓存会安全清空 static，而不是假定它可见。
+
 精确查询方法和缓存租用方式见 [AB_INTERFACE.md](docs/AB_INTERFACE.md)。
 
 ## 8. C 和 D 应拿到什么

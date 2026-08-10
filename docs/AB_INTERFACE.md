@@ -64,7 +64,7 @@ with cache.lease(frame.record.data_id) as leased:
 
 | 类型 | 默认行为 |
 |---|---|
-| static | 每类保留最新一份，跳转后继续复用但改挂新代次 |
+| static | 每类保留最新一份；跳转后仅复用 `issue_time <= 新 simulation_time` 的帧并改挂新代次 |
 | slow | 每个类型至少保留最近两帧 |
 | dynamic | 默认每类型最多 64 帧，足够最近真实帧和已发布预报窗 |
 | event | 保留未过期事件；`metadata.end_time` 过期后回收 |
@@ -77,9 +77,11 @@ with cache.lease(frame.record.data_id) as leased:
 
 1. 提升 `generation_id`；
 2. 清空动态、缓变和事件帧；
-3. 保留静态帧并重新挂载到新代次；
+3. 仅保留在新模拟时刻已经发布（`issue_time <= snapshot.current_time`）的静态帧，并重新挂载到新代次；
 4. 使仍在加载的旧任务在 `cache.put()` 时得到 `A302 StaleGenerationError`；
 5. 由 A 围绕新时刻重新预取。
+
+`WorkPackageA` 会把 `snapshot.current_time` 传给 `cache.reset_generation()`。若独立调用缓存重置接口但没有提供 `simulation_time`，缓存会清空 static；这是防止未来信息泄漏的安全默认值。向过去跳转后，发布时间晚于目标时刻的静态资料不会继续留在 AB。
 
 因此 B 应在开始任务时保存代次，并在发布 BC 风险帧时继续携带该代次。C/D 可用相同机制丢弃跳转前的迟到结果。
 

@@ -37,7 +37,10 @@ class WorkPackageA:
         self._unsubscribe()
 
     def _on_seek(self, snapshot: ClockSnapshot) -> None:
-        self.cache.reset_generation(snapshot.generation_id)
+        self.cache.reset_generation(
+            snapshot.generation_id,
+            simulation_time=snapshot.current_time,
+        )
         self.events.publish(
             GenerationChangedEvent(snapshot.generation_id, snapshot.current_time)
         )

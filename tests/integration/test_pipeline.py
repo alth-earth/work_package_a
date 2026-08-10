@@ -22,6 +22,15 @@ def _write_ice(path, value):
     dataset.to_netcdf(path, engine="h5netcdf")
 
 
+def _write_bathymetry(path, value):
+    dataset = xr.Dataset(
+        {"elevation": (("latitude", "longitude"), np.full((2, 2), value))},
+        coords={"longitude": [18.0, 19.0], "latitude": [70.0, 71.0]},
+    )
+    dataset["elevation"].attrs["units"] = "m"
+    dataset.to_netcdf(path, engine="h5netcdf")
+
+
 def test_ingest_replay_jump_and_archive_integrity(tmp_path):
     data_root = tmp_path / "data"
     pipeline = IngestionPipeline(data_root)
@@ -71,3 +80,41 @@ def test_ingest_replay_jump_and_archive_integrity(tmp_path):
     report = inspect_archive(data_root)
     assert report.ok
     assert report.checked == 2
+
+
+def test_seek_backwards_removes_static_frame_not_yet_published(tmp_path):
+    data_root = tmp_path / "data"
+    pipeline = IngestionPipeline(data_root)
+    source_file = tmp_path / "bathymetry.nc"
+    _write_bathymetry(source_file, -100.0)
+    pipeline.ingest_netcdf(
+        source_file,
+        data_type="bathymetry",
+        route_id="tromso_to_svalbard",
+        issue_time=T0,
+        valid_time=T0,
+        source="test",
+    )
+
+    clock = SimulationClock(T0 + timedelta(hours=1))
+    cache = PartitionedABCache(max_memory_mb=8)
+    service = WorkPackageA(
+        source=LocalArchiveSource(data_root), clock=clock, cache=cache
+    )
+    frames = service.prefetch(
+        route_id="tromso_to_svalbard",
+        data_types=["bathymetry"],
+    )
+    assert len(frames) == 1
+    assert cache.latest("bathymetry") is not None
+
+    clock.seek(T0 - timedelta(hours=1))
+
+    assert cache.latest("bathymetry") is None
+    assert (
+        service.prefetch(
+            route_id="tromso_to_svalbard",
+            data_types=["bathymetry"],
+        )
+        == []
+    )

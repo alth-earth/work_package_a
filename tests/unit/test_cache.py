@@ -47,11 +47,52 @@ def test_seek_keeps_static_and_rejects_late_old_generation(make_record):
     dynamic = StandardDataFrame(make_record(data_id="dynamic"), Payload(), 0)
     cache.put(static)
     cache.put(dynamic)
-    cache.reset_generation(1)
+    cache.reset_generation(1, simulation_time=T0)
     assert cache.latest("bathymetry").generation_id == 1
     assert cache.latest("wind_field") is None
     with pytest.raises(StaleGenerationError):
         cache.put(dynamic)
+
+
+def test_seek_backwards_drops_static_published_after_target(make_record):
+    cache = PartitionedABCache(max_memory_mb=1)
+    static = StandardDataFrame(
+        make_record(
+            data_id="future-static",
+            data_type="bathymetry",
+            category=DataCategory.STATIC,
+            variables=("elevation",),
+            issue_time=T0 + timedelta(hours=1),
+        ),
+        Payload(),
+        0,
+    )
+    cache.put(static)
+
+    cache.reset_generation(1, simulation_time=T0)
+
+    assert cache.generation_id == 1
+    assert cache.latest("bathymetry") is None
+
+
+def test_reset_generation_without_simulation_time_clears_static(make_record):
+    cache = PartitionedABCache(max_memory_mb=1)
+    static = StandardDataFrame(
+        make_record(
+            data_id="static",
+            data_type="bathymetry",
+            category=DataCategory.STATIC,
+            variables=("elevation",),
+        ),
+        Payload(),
+        0,
+    )
+    cache.put(static)
+
+    cache.reset_generation(1)
+
+    assert cache.generation_id == 1
+    assert cache.latest("bathymetry") is None
 
 
 def test_leased_frame_is_not_evicted(make_record):
