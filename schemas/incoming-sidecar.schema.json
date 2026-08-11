@@ -4,9 +4,19 @@
   "title": "Work package A incoming sidecar",
   "type": "object",
   "additionalProperties": false,
-  "required": ["file", "data_type", "route_id", "issue_time", "valid_time", "source"],
+  "required": [
+    "file", "payload_sha256", "payload_size_bytes", "publication_id",
+    "data_type", "route_id", "issue_time", "valid_time", "source",
+    "version", "quality_flag", "metadata"
+  ],
   "properties": {
-    "file": {"type": "string", "minLength": 1},
+    "file": {"type": "string", "minLength": 1, "pattern": "^[^/\\\\]+$"},
+    "payload_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "payload_size_bytes": {"type": "integer", "minimum": 0},
+    "publication_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}$"
+    },
     "data_type": {
       "enum": [
         "sea_ice_concentration", "sea_ice_type", "sea_ice_edge", "sea_ice_drift",
@@ -14,14 +24,25 @@
         "temperature", "visibility", "bathymetry", "long_term_restricted_area"
       ]
     },
-    "route_id": {"type": "string", "minLength": 1},
+    "route_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}$"
+    },
     "issue_time": {"type": "string", "format": "date-time"},
     "valid_time": {"type": "string", "format": "date-time"},
     "source": {"type": "string", "minLength": 1},
-    "version": {"type": "string", "default": "1"},
-    "quality_flag": {"enum": ["good", "suspect", "degraded", "missing"]},
+    "version": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}$"
+    },
+    "quality_flag": {"enum": ["good", "suspect", "degraded"]},
     "metadata": {
       "type": "object",
+      "required": ["issue_time_evidence"],
+      "dependentRequired": {
+        "forecast_reference_time": ["forecast_lead_hours"],
+        "forecast_lead_hours": ["forecast_reference_time"]
+      },
       "properties": {
         "issue_time_evidence": {"$ref": "#/$defs/issueTimeEvidence"},
         "source_time_index": {"type": "object", "additionalProperties": {"type": "integer"}},
@@ -43,7 +64,7 @@
         "issue_time": {"type": "string", "format": "date-time"},
         "method": {
           "enum": [
-            "copernicus_catalogue", "http_last_modified", "dataset_attribute",
+            "copernicus_service_sync", "http_last_modified", "dataset_attribute",
             "explicit_catalog", "conservative_retrieval"
           ]
         },

@@ -2,6 +2,8 @@
 
 from arctic_route_data.cache import PartitionedABCache
 from arctic_route_data.clock import SimulationClock
+from arctic_route_data.config import WorkPackageAConfig, load_config
+from arctic_route_data.forecast_acquisition import Bounds, NativeForecastAcquirer
 from arctic_route_data.issue_time import IssueTimeEvidence, SourceIssueTimeResolver
 from arctic_route_data.legacy_downloaders import LegacyDownloaderRunner
 from arctic_route_data.manifest import ManifestStore
@@ -16,17 +18,21 @@ from arctic_route_data.service import WorkPackageA
 
 __all__ = [
     "AcquisitionPublisher",
+    "Bounds",
     "DataCategory",
     "IssueTimeEvidence",
     "LegacyDownloaderRunner",
     "ManifestRecord",
     "ManifestStore",
+    "NativeForecastAcquirer",
     "PartitionedABCache",
     "QualityFlag",
     "SimulationClock",
     "SourceIssueTimeResolver",
     "StandardDataFrame",
     "WorkPackageA",
+    "WorkPackageAConfig",
+    "load_config",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

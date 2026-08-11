@@ -2,6 +2,84 @@
 
 本文件由项目原 README 改名而来，用于保留工作包 A 首次完整交付的实现说明。当前项目入口、运行方法和 B/C/D 接手指南请阅读 [README.md](README.md)。
 
+## 0.3.0 - 2026-08-11：真实未来窗与数据合同大修
+
+0.3.0 对 0.2.0 的“已完成”口径做了纠正：13 项 registry 是外部旧脚本的兼容入口，
+不是 13 类完整未来预测均已真实联网验证。以下是本轮实际修改。
+
+### 原生采集与完整时域
+
+- 新增项目内 `forecast_acquisition.py`：GFS 风、2 m 气温、能见度按当前
+  `as_of` 向未来覆盖目标 156 h，并按可用周期自动延伸到必要 lead（本次为 f162）。
+- 新增 Copernicus 波浪、流、水位、冰密集度、冰漂、冰厚产品/字段映射，显式固定
+  `dataset_part="default"`；缺少成对凭据时下载前失败。
+- 保存 route/bbox/变量相关的 `source_snapshot_id`、源 GRIB/NetCDF、请求和 checksum；
+  `data/source_snapshots` 加入 Git 忽略。
+- typed TOML 正式生效；采集身份从含混的 scenario 改为 corridor，旧 CLI 名只作兼容。
+- Tromsø 采集 bbox 与 C 配置统一为 `[10.0, 68.5, 22.0, 79.5]`。
+
+### 时间与发布时间证据
+
+- 修复旧入口固定 f000/向过去取帧不能覆盖未来的误解；动态/缓变数据缺 valid time
+  时不再用 issue time 伪造。
+- Copernicus `arco_updated_date` 改为非权威 service-sync 门禁；NOMADS filter
+  `Last-Modified` 不再冒充模型生产发布时间。
+- HTTP 证据按请求 URL、GFS cycle+lead 与 valid time 一一绑定；错误响应/其他周期不能
+  污染缓存 payload。
+- 修复 scalar `numpy.datetime64` 被 `.item()` 变成纳秒整数，以及同维 time+step
+  应 pairwise 而非外积的问题。
+
+### 规范化与内容 QC
+
+- 扩展 CF aliases，严格执行单位白名单、转换、物理范围、finite 和缺测覆盖检查；未知
+  单位不再只改标签。
+- 风、流、冰漂统一为真东/真北分量；已有 eastward/northward 的 `vxsi/vysi`
+  不再误旋转，模糊方向拒绝，明确 polar-stereographic X/Y 才旋转。
+- 波向统一为 from true north clockwise；水深统一为 positive-up elevation。
+- 新增 `grid_id/coordinate_digest/grid_topology/source_grid_mapping`；成对 point 坐标不再
+  误标规则网格或分别排序。
+- GeoJSON 严格验证 Feature/geometry/坐标嵌套、finite 和经纬范围；限制区默认禁止自动
+  转硬掩膜。
+
+### 发布、归档与 manifest
+
+- sidecar 新增强制 `payload_sha256/payload_size_bytes/publication_id`，避免 payload 与
+  其他任务证据串绑。
+- ready 路径内容寻址；同 valid/issue/version 不再覆盖历史 revision。
+- route/version/path 增加安全 token 与根目录检查；生产者保留字段不能覆盖 A 的
+  normalization/source/upstream provenance。
+- manifest 改为不可变登记和幂等一致重试；v1→v2 使用原子迁移、行数校验和中断恢复。
+- Folder watcher 使用原子 claim、成对 quarantine、raw staging 和成功入库后的归档重试。
+- `doctor` 新增空库、checksum、orphan ready、incoming 检查，并忽略仓库 `.gitkeep`。
+
+### AB 缓存与服务
+
+- 分区键加入 route_id，修复多航线串帧；逻辑帧按质量、issue、ingest、version 解析
+  revision。
+- `latest_for_b` 只返回模拟时刻及以前；另增显式 `latest_forecast_for_b`。
+- slow/dynamic 默认容量统一为 256；租用帧超限时先退出活动集，lease 结束后删除。
+- payload 容器和元数据隔离，消费者修改不再污染缓存。
+- event 会随时钟推进过期；坏来源和坏事件订阅者被隔离并报告。
+- 新增 `PreparedWindow/CoverageReport`，默认目标 156 h、最低完整 132 h，报告缺口与
+  source snapshot。
+- 准备窗口固定同一个 ClockSnapshot；普通 tick 或 seek 发生在处理中都会拒绝整个混合
+  窗口，修复窗口级未来信息泄漏。
+- static 跨代复用继续强制 `issue_time <= 新 simulation_time`；未传时刻安全清空。
+
+### 真实运行证据
+
+- 2026-08-11 从 NOAA/NOMADS 实际下载 Tromsø–Svalbard GFS 06Z，f000..f162，
+  风/温度/能见度各 55 帧，共 165 条首轮 manifest 记录。
+- valid time 为 `2026-08-11 06:00Z .. 2026-08-18 00:00Z`；首轮目录约 18 MB；
+  doctor 165/165 通过，132 h 覆盖检查完整。
+- 这些帧因使用保守 retrieval gate 标为 suspect；这是 availability 证据等级，不表示
+  内容值已知错误。
+- bbox 与 C 对齐到北界 79.5 后又真实采集 165 条新 revision；当前 330 条全部通过
+  doctor，较新 as-of 会选择 snapshot `gfs-20260811T06Z-8840810b511f`。
+- Copernicus 产品、变量、方向、目录末端时效与匿名数据块已核验，但官方 Toolbox 在
+  当前机器无凭据时拒绝下载，因此没有声称正式入库成功；ARCO 分块可能产生数百 MB
+  传输。
+
 ## Unreleased - 2026-08-09
 
 - 将原项目说明迁移为本变更记录。

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from arctic_route_data.timeutils import ensure_utc, isoformat_utc, parse_utc
 
 
 class IssueTimeMethod(StrEnum):
-    COPERNICUS_CATALOGUE = "copernicus_catalogue"
+    COPERNICUS_SERVICE_SYNC = "copernicus_service_sync"
     HTTP_LAST_MODIFIED = "http_last_modified"
     DATASET_ATTRIBUTE = "dataset_attribute"
     EXPLICIT_CATALOG = "explicit_catalog"
@@ -38,6 +39,20 @@ class IssueTimeEvidence:
         object.__setattr__(
             self, "observed_at", ensure_utc(self.observed_at, field="observed_at")
         )
+        for field_name in ("authority", "reference"):
+            if not str(getattr(self, field_name)).strip():
+                raise MissingMetadataError(f"issue_time evidence {field_name} 不能为空")
+        if not isinstance(self.raw_value, str):
+            raise MissingMetadataError("issue_time evidence raw_value 必须是字符串")
+        if not isinstance(self.authoritative, bool):
+            raise MissingMetadataError("issue_time evidence authoritative 必须是 boolean")
+        if self.method in {
+            IssueTimeMethod.COPERNICUS_SERVICE_SYNC,
+            IssueTimeMethod.CONSERVATIVE_RETRIEVAL,
+        } and self.authoritative:
+            raise MissingMetadataError(f"{self.method.value} 不能标记为 authoritative")
+        if self.issue_time > self.observed_at + timedelta(minutes=10):
+            raise MissingMetadataError("issue_time 不能明显晚于 evidence observed_at")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -110,7 +125,7 @@ class IssueTimeResolver(Protocol):
 
 
 class IssueTimeResolutionError(MissingMetadataError):
-    """No authoritative publication timestamp could be established."""
+    """No auditable availability-gate timestamp could be established."""
 
 
 def parse_source_datetime(value: Any) -> datetime:
@@ -183,6 +198,23 @@ class HttpLastModifiedResolver:
                 )
             )
             score = sum(token in request_text for token in tokens)
+            normalized_request = re.sub(r"[^0-9A-Za-z]+", "", request_text)
+            precise_match = _request_matches_valid_time(
+                request_text,
+                normalized_request,
+                context.valid_times,
+                source_family=context.source_family,
+            )
+            if precise_match:
+                score += 4
+            requires_hour_match = context.source_family == "noaa_gfs" or any(
+                value.hour or value.minute or value.second for value in context.valid_times
+            )
+            if context.valid_times and (score == 0 or (requires_hour_match and not precise_match)):
+                # A legacy call can mix cached payloads with newly downloaded files.
+                # Never attach a response to a frame unless its valid-time token is
+                # actually present in that response's URL or request parameters.
+                continue
             if any(suffix in request_text.casefold() for suffix in (".nc", ".grib", ".grib2")):
                 score += 2
             raw_value = next(
@@ -202,6 +234,34 @@ class HttpLastModifiedResolver:
             observed_at=exchange.observed_at,
             raw_value=raw_value,
         )
+
+
+def _request_matches_valid_time(
+    request_text: str,
+    normalized_request: str,
+    valid_times: tuple[datetime, ...],
+    *,
+    source_family: str,
+) -> bool:
+    if any(value.strftime("%Y%m%d%H") in normalized_request for value in valid_times):
+        return True
+    if source_family != "noaa_gfs":
+        return False
+    date_match = re.search(r"gfs[./_-]?(\d{8})", request_text, flags=re.IGNORECASE)
+    cycle_match = re.search(r"t(\d{2})z", request_text, flags=re.IGNORECASE)
+    if cycle_match is None:
+        cycle_match = re.search(r"/(\d{2})/(?:atmos/)?gfs", request_text, flags=re.IGNORECASE)
+    lead_match = re.search(r"(?:^|[^A-Za-z0-9])f(\d{3})(?:[^0-9]|$)", request_text)
+    if date_match is None or cycle_match is None or lead_match is None:
+        return False
+    try:
+        cycle = datetime.strptime(
+            date_match.group(1) + cycle_match.group(1), "%Y%m%d%H"
+        ).replace(tzinfo=UTC)
+    except ValueError:
+        return False
+    derived_valid_time = cycle + timedelta(hours=int(lead_match.group(1)))
+    return derived_valid_time in valid_times
 
 
 class DatasetAttributeIssueTimeResolver:
@@ -244,7 +304,12 @@ DescribeCallable = Callable[..., Any]
 
 
 class CopernicusCatalogueIssueTimeResolver:
-    """Use official ``copernicusmarine.describe`` dataset catalogue metadata."""
+    """Use the ARCO service-sync timestamp as a conservative availability gate.
+
+    Copernicus explicitly states that these fields describe the service copy and
+    are not the producer's original publication time.  They are therefore never
+    marked authoritative and must not be presented as a model-cycle timestamp.
+    """
 
     CATALOG_FIELDS = (
         "arco_updated_date",
@@ -280,7 +345,7 @@ class CopernicusCatalogueIssueTimeResolver:
         field_name, issue_time, raw_value = max(plausible, key=lambda item: item[1])
         return IssueTimeEvidence(
             issue_time=issue_time,
-            method=IssueTimeMethod.COPERNICUS_CATALOGUE,
+            method=IssueTimeMethod.COPERNICUS_SERVICE_SYNC,
             authority="Copernicus Marine Data Store",
             reference=(
                 "copernicusmarine.describe"
@@ -288,6 +353,7 @@ class CopernicusCatalogueIssueTimeResolver:
             ),
             observed_at=context.observed_at,
             raw_value=raw_value,
+            authoritative=False,
         )
 
 
@@ -330,7 +396,7 @@ class CompositeIssueTimeResolver:
                 return resolver.resolve(context)
             except IssueTimeResolutionError as exc:
                 errors.append(f"{type(resolver).__name__}: {exc}")
-        raise IssueTimeResolutionError("无法确定权威 issue_time；" + " | ".join(errors))
+        raise IssueTimeResolutionError("无法确定可审计的 issue_time；" + " | ".join(errors))
 
 
 class SourceIssueTimeResolver:

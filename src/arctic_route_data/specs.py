@@ -27,7 +27,13 @@ DATA_TYPE_SPECS: dict[str, DataTypeSpec] = {
     "sea_ice_concentration": DataTypeSpec(
         "sea_ice_concentration",
         DataCategory.SLOW,
-        (VariableSpec("ice_concentration", ("ice_conc", "sic", "ice concentration"), "1"),),
+        (
+            VariableSpec(
+                "ice_concentration",
+                ("ice_conc", "sic", "siconc", "sea_ice_area_fraction", "ice concentration"),
+                "1",
+            ),
+        ),
         "Copernicus Marine / OSI SAF",
     ),
     "sea_ice_type": DataTypeSpec(
@@ -48,8 +54,16 @@ DATA_TYPE_SPECS: dict[str, DataTypeSpec] = {
         "sea_ice_drift",
         DataCategory.SLOW,
         (
-            VariableSpec("ice_drift_u", ("vxsi", "usi", "uice", "ice_u"), "m s-1"),
-            VariableSpec("ice_drift_v", ("vysi", "vsi", "vice", "ice_v"), "m s-1"),
+            VariableSpec(
+                "ice_drift_u",
+                ("vxsi", "usi", "uice", "ice_u", "eastward_sea_ice_velocity"),
+                "m s-1",
+            ),
+            VariableSpec(
+                "ice_drift_v",
+                ("vysi", "vsi", "vice", "ice_v", "northward_sea_ice_velocity"),
+                "m s-1",
+            ),
         ),
         "Copernicus Marine",
     ),
@@ -63,9 +77,26 @@ DATA_TYPE_SPECS: dict[str, DataTypeSpec] = {
         "wave",
         DataCategory.DYNAMIC,
         (
-            VariableSpec("significant_wave_height", ("VHM0", "swh", "hs"), "m"),
-            VariableSpec("mean_wave_direction", ("VMDR", "mwd"), "degree"),
-            VariableSpec("peak_wave_period", ("VTPK", "pp1d", "tp"), "s"),
+            VariableSpec(
+                "significant_wave_height",
+                ("VHM0", "swh", "hs", "sea_surface_wave_significant_height"),
+                "m",
+            ),
+            VariableSpec(
+                "mean_wave_direction",
+                ("VMDR", "mwd", "sea_surface_wave_from_direction"),
+                "degree",
+            ),
+            VariableSpec(
+                "peak_wave_period",
+                (
+                    "VTPK",
+                    "pp1d",
+                    "tp",
+                    "sea_surface_wave_period_at_variance_spectral_density_maximum",
+                ),
+                "s",
+            ),
         ),
         "Copernicus Marine",
     ),
@@ -74,10 +105,14 @@ DATA_TYPE_SPECS: dict[str, DataTypeSpec] = {
         DataCategory.SLOW,
         (
             VariableSpec(
-                "ocean_current_u", ("uo", "vozocrtx", "eastward_sea_water_velocity"), "m s-1"
+                "ocean_current_u",
+                ("uo", "vxo", "vozocrtx", "eastward_sea_water_velocity"),
+                "m s-1",
             ),
             VariableSpec(
-                "ocean_current_v", ("vo", "vomecrty", "northward_sea_water_velocity"), "m s-1"
+                "ocean_current_v",
+                ("vo", "vyo", "vomecrty", "northward_sea_water_velocity"),
+                "m s-1",
             ),
         ),
         "Copernicus Marine",
@@ -92,8 +127,12 @@ DATA_TYPE_SPECS: dict[str, DataTypeSpec] = {
         "wind_field",
         DataCategory.DYNAMIC,
         (
-            VariableSpec("wind_u10", ("u10", "10u", "UGRD", "u"), "m s-1"),
-            VariableSpec("wind_v10", ("v10", "10v", "VGRD", "v"), "m s-1"),
+            VariableSpec(
+                "wind_u10", ("u10", "10u", "UGRD", "eastward_wind", "u"), "m s-1"
+            ),
+            VariableSpec(
+                "wind_v10", ("v10", "10v", "VGRD", "northward_wind", "v"), "m s-1"
+            ),
         ),
         "NOAA GFS/NOMADS",
     ),

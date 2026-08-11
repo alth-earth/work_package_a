@@ -9,11 +9,15 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
+from arctic_route_data.errors import ManifestConflictError
 from arctic_route_data.models import ManifestRecord
 from arctic_route_data.timeutils import isoformat_utc
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS manifest (
+_SCHEMA_VERSION = 2
+_EXPECTED_UNIQUE = (
+    "UNIQUE(route_id, data_type, valid_time, issue_time, source, version, checksum)"
+)
+_TABLE_COLUMNS_SCHEMA = """
     data_id TEXT PRIMARY KEY,
     data_type TEXT NOT NULL,
     category TEXT NOT NULL,
@@ -33,12 +37,13 @@ CREATE TABLE IF NOT EXISTS manifest (
     size_bytes INTEGER NOT NULL,
     media_type TEXT NOT NULL,
     metadata_json TEXT NOT NULL,
-    UNIQUE(route_id, data_type, valid_time, issue_time, version, checksum)
-);
-CREATE INDEX IF NOT EXISTS idx_manifest_available
-    ON manifest(route_id, data_type, issue_time, valid_time);
-CREATE INDEX IF NOT EXISTS idx_manifest_path ON manifest(relative_path);
+    UNIQUE(route_id, data_type, valid_time, issue_time, source, version, checksum)
 """
+_COLUMNS = (
+    "data_id, data_type, category, route_id, variables_json, issue_time, valid_time, "
+    "ingest_time, bbox_json, crs, resolution_json, source, quality_flag, version, "
+    "checksum, relative_path, size_bytes, media_type, metadata_json"
+)
 
 
 class ManifestStore:
@@ -64,27 +69,100 @@ class ManifestStore:
             connection.close()
 
     def _initialize(self) -> None:
-        with self._open() as connection:
-            connection.executescript(_SCHEMA)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._recover_interrupted_migration(connection)
+            row = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'manifest'"
+            ).fetchone()
+            table_sql = "" if row is None else " ".join(str(row["sql"]).split())
+            if row is None:
+                self._create_table(connection, "manifest")
+            elif _EXPECTED_UNIQUE not in table_sql:
+                self._migrate_v1(connection)
+            self._create_indexes(connection)
+            connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
-    def register(self, record: ManifestRecord) -> None:
+    @staticmethod
+    def _create_table(connection: sqlite3.Connection, name: str) -> None:
+        if name not in {"manifest", "manifest_v2"}:
+            raise ValueError("unexpected manifest table name")
+        connection.execute(f"CREATE TABLE {name} ({_TABLE_COLUMNS_SCHEMA})")
+
+    @staticmethod
+    def _create_indexes(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_manifest_available "
+            "ON manifest(route_id, data_type, issue_time, valid_time)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_manifest_path ON manifest(relative_path)"
+        )
+
+    @classmethod
+    def _migrate_v1(cls, connection: sqlite3.Connection) -> None:
+        connection.execute("DROP TABLE IF EXISTS manifest_v2")
+        cls._create_table(connection, "manifest_v2")
+        connection.execute(
+            f"INSERT INTO manifest_v2 ({_COLUMNS}) SELECT {_COLUMNS} FROM manifest"
+        )
+        old_count = connection.execute("SELECT COUNT(*) FROM manifest").fetchone()[0]
+        new_count = connection.execute("SELECT COUNT(*) FROM manifest_v2").fetchone()[0]
+        if old_count != new_count:
+            raise ManifestConflictError("manifest schema 迁移行数校验失败")
+        connection.execute("DROP INDEX IF EXISTS idx_manifest_available")
+        connection.execute("DROP INDEX IF EXISTS idx_manifest_path")
+        connection.execute("ALTER TABLE manifest RENAME TO manifest_v1_backup")
+        connection.execute("ALTER TABLE manifest_v2 RENAME TO manifest")
+        connection.execute("DROP TABLE manifest_v1_backup")
+
+    @classmethod
+    def _recover_interrupted_migration(cls, connection: sqlite3.Connection) -> None:
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        if "manifest_v1_backup" not in tables:
+            return
+        if "manifest" in tables:
+            current_count = connection.execute("SELECT COUNT(*) FROM manifest").fetchone()[0]
+            backup_count = connection.execute(
+                "SELECT COUNT(*) FROM manifest_v1_backup"
+            ).fetchone()[0]
+            current_sql = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='manifest'"
+            ).fetchone()[0]
+            if current_count == backup_count and _EXPECTED_UNIQUE in " ".join(
+                str(current_sql).split()
+            ):
+                connection.execute("DROP TABLE manifest_v1_backup")
+                return
+            connection.execute("DROP TABLE manifest")
+        connection.execute("ALTER TABLE manifest_v1_backup RENAME TO manifest")
+
+    def register(self, record: ManifestRecord) -> ManifestRecord:
         values = record.to_dict()
-        with self._open() as connection:
-            connection.execute(
-                """
+        try:
+            with self._open() as connection:
+                connection.execute(
+                    """
                 INSERT INTO manifest (
                     data_id, data_type, category, route_id, variables_json,
                     issue_time, valid_time, ingest_time, bbox_json, crs,
                     resolution_json, source, quality_flag, version, checksum,
                     relative_path, size_bytes, media_type, metadata_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(data_id) DO UPDATE SET
-                    quality_flag=excluded.quality_flag,
-                    metadata_json=excluded.metadata_json,
-                    relative_path=excluded.relative_path,
-                    size_bytes=excluded.size_bytes
                 """,
-                (
+                    (
                     values["data_id"],
                     values["data_type"],
                     values["category"],
@@ -104,8 +182,24 @@ class ManifestStore:
                     values["size_bytes"],
                     values["media_type"],
                     json.dumps(values["metadata"], ensure_ascii=False, sort_keys=True),
-                ),
-            )
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            existing = self.get(record.data_id)
+            if existing is None:
+                raise ManifestConflictError(
+                    "manifest 逻辑唯一键冲突，且 data_id 不同；拒绝覆盖已发布记录"
+                ) from exc
+            existing_values = existing.to_dict()
+            candidate_values = record.to_dict()
+            existing_values.pop("ingest_time")
+            candidate_values.pop("ingest_time")
+            if existing_values != candidate_values:
+                raise ManifestConflictError(
+                    f"data_id={record.data_id} 已发布且内容不同；manifest 不可变"
+                ) from exc
+            return existing
+        return record
 
     def register_many(self, records: Iterable[ManifestRecord]) -> None:
         for record in records:

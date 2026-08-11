@@ -13,8 +13,9 @@ import xarray as xr
 
 from arctic_route_data.errors import MissingMetadataError
 from arctic_route_data.issue_time import IssueTimeEvidence, IssueTimeMethod
-from arctic_route_data.models import ManifestRecord
+from arctic_route_data.models import DataCategory, ManifestRecord
 from arctic_route_data.publisher import AcquisitionPublisher
+from arctic_route_data.specs import get_data_type_spec
 from arctic_route_data.temporal_split import discover_valid_times
 from arctic_route_data.timeutils import ensure_utc
 
@@ -81,10 +82,20 @@ class LegacyDownloaderAdapter:
                 version = str(metadata.pop("version", "legacy"))
                 explicit_valid_time = metadata.pop("valid_time", None)
                 if isinstance(payload, xr.Dataset):
-                    try:
-                        has_times = bool(discover_valid_times(payload))
-                    except ValueError:
-                        has_times = False
+                    has_time_axis = any(
+                        name in payload.variables
+                        for name in ("time", "valid_time", "forecast_time", "step")
+                    )
+                    has_times = bool(discover_valid_times(payload)) if has_time_axis else False
+                    category = get_data_type_spec(self.data_type).category
+                    if (
+                        not has_times
+                        and explicit_valid_time is None
+                        and category is not DataCategory.STATIC
+                    ):
+                        raise MissingMetadataError(
+                            f"{self.data_type} 是 {category.value} 数据，payload 必须带合法有效时刻"
+                        )
                     published = self.publisher.publish_dataset(
                         payload,
                         data_type=self.data_type,
@@ -95,7 +106,7 @@ class LegacyDownloaderAdapter:
                         valid_time=(
                             ensure_utc(explicit_valid_time, field="valid_time")
                             if explicit_valid_time is not None and not has_times
-                            else None
+                            else issue_time if not has_times else None
                         ),
                         metadata=metadata,
                     )

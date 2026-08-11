@@ -1,8 +1,11 @@
 from datetime import UTC, datetime
 
+import numpy as np
 import pytest
+import xarray as xr
 
 from arctic_route_data.errors import MetadataValidationError
+from arctic_route_data.models import StandardDataFrame
 from arctic_route_data.timeutils import parse_utc
 
 
@@ -25,3 +28,25 @@ def test_manifest_path_cannot_escape_archive(make_record, tmp_path):
     object.__setattr__(record, "relative_path", "../secret.nc")
     with pytest.raises(MetadataValidationError, match="逃逸"):
         record.absolute_path(tmp_path)
+
+
+def test_unsafe_identifiers_are_rejected_before_becoming_paths(make_record):
+    with pytest.raises(MetadataValidationError, match="route_id"):
+        make_record(route_id="../other-route")
+    with pytest.raises(MetadataValidationError, match="version"):
+        make_record(version="../../escape")
+
+
+def test_metadata_and_payload_buffers_are_read_only(make_record):
+    record = make_record(metadata={"nested": {"value": 1}})
+    dataset = xr.Dataset({"value": ("x", np.array([1.0, 2.0]))})
+    frame = StandardDataFrame(record, dataset, 0)
+
+    with pytest.raises(TypeError):
+        record.metadata["nested"]["value"] = 2
+    with pytest.raises(ValueError, match="read-only"):
+        frame.payload["value"].values[0] = 3.0
+
+    consumer = frame.consumer_copy()
+    consumer.payload["derived"] = ("x", [5.0, 6.0])
+    assert "derived" not in frame.payload

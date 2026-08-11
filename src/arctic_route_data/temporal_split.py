@@ -10,7 +10,7 @@ import numpy as np
 import xarray as xr
 
 from arctic_route_data.errors import DataValidationError
-from arctic_route_data.timeutils import isoformat_utc
+from arctic_route_data.timeutils import isoformat_utc, parse_utc
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +29,11 @@ class _TimeAxis:
 
 
 def to_utc_datetime(value: Any) -> datetime:
+    if isinstance(value, str):
+        try:
+            return parse_utc(value, field="time coordinate")
+        except ValueError as exc:
+            raise DataValidationError(f"无法解析时间坐标值: {value!r}") from exc
     if isinstance(value, datetime):
         if value.tzinfo is None:
             return value.replace(tzinfo=UTC)
@@ -73,7 +78,7 @@ def split_dataset_by_valid_time(
     seen: set[datetime] = set()
     indices = np.ndindex(values.shape) if values.shape else [()]
     for position in indices:
-        valid_time = to_utc_datetime(values[position] if position else values.item())
+        valid_time = to_utc_datetime(values[position] if position else values[()])
         if valid_time in seen:
             raise DataValidationError(
                 f"同一文件包含重复 valid_time={isoformat_utc(valid_time)}；"
@@ -87,6 +92,8 @@ def split_dataset_by_valid_time(
         selected.attrs = dict(selected.attrs)
         selected.attrs["valid_time"] = isoformat_utc(valid_time)
         if reference_time is not None:
+            if valid_time < reference_time:
+                raise DataValidationError("forecast_lead_hours 不能为负数")
             selected.attrs["forecast_reference_time"] = isoformat_utc(reference_time)
             selected.attrs["forecast_lead_hours"] = (
                 valid_time - reference_time
@@ -101,7 +108,10 @@ def split_dataset_by_valid_time(
 def _valid_time_coordinate(dataset: xr.Dataset) -> _TimeAxis:
     for name in ("valid_time", "forecast_time"):
         if name in dataset.variables:
-            return _TimeAxis(name, np.asarray(dataset[name].values), dataset[name].dims)
+            values = np.asarray(dataset[name].values)
+            if not np.issubdtype(values.dtype, np.datetime64):
+                raise DataValidationError(f"{name} 存在但不是日期时间坐标")
+            return _TimeAxis(name, values, dataset[name].dims)
     if "time" in dataset.variables and "step" in dataset.variables:
         base = np.asarray(dataset["time"].values)
         step = np.asarray(dataset["step"].values)
@@ -111,6 +121,10 @@ def _valid_time_coordinate(dataset: xr.Dataset) -> _TimeAxis:
             if step.ndim == 0:
                 return _TimeAxis("time", base + step, dataset["time"].dims)
             if base.ndim == 1 and step.ndim == 1:
+                if dataset["time"].dims == dataset["step"].dims:
+                    if base.shape != step.shape:
+                        raise DataValidationError("共享维度的 time/step 长度不一致")
+                    return _TimeAxis("__derived_valid_time", base + step, dataset["time"].dims)
                 values = base[:, None] + step[None, :]
                 return _TimeAxis(
                     "__derived_valid_time",
@@ -118,7 +132,10 @@ def _valid_time_coordinate(dataset: xr.Dataset) -> _TimeAxis:
                     (dataset["time"].dims[0], dataset["step"].dims[0]),
                 )
     if "time" in dataset.variables:
-        return _TimeAxis("time", np.asarray(dataset["time"].values), dataset["time"].dims)
+        values = np.asarray(dataset["time"].values)
+        if not np.issubdtype(values.dtype, np.datetime64):
+            raise DataValidationError("time 存在但不是日期时间坐标")
+        return _TimeAxis("time", values, dataset["time"].dims)
     raise DataValidationError("NetCDF 缺少 time/valid_time/forecast_time 坐标")
 
 

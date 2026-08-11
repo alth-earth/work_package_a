@@ -33,8 +33,8 @@ def _context(**changes):
 def test_http_last_modified_is_recorded_as_authoritative_evidence():
     exchange = CapturedHttpExchange(
         method="GET",
-        request_url="https://nomads.example/gfs.20260715/gfs_f006.grib2",
-        response_url="https://nomads.example/gfs.20260715/gfs_f006.grib2",
+        request_url="https://nomads.example/gfs.20260715/06/gfs.t06z.f006.grib2",
+        response_url="https://nomads.example/gfs.20260715/06/gfs.t06z.f006.grib2",
         request_params={},
         response_headers={"Last-Modified": "Wed, 15 Jul 2026 06:42:00 GMT"},
         observed_at=datetime(2026, 7, 15, 13, tzinfo=UTC),
@@ -57,13 +57,13 @@ def test_failed_http_response_cannot_supply_issue_time():
         observed_at=datetime(2026, 7, 15, 13, tzinfo=UTC),
         status_code=503,
     )
-    with pytest.raises(IssueTimeResolutionError, match="无法确定权威"):
+    with pytest.raises(IssueTimeResolutionError, match="无法确定可审计"):
         SourceIssueTimeResolver().resolve(_context(http_exchanges=(exchange,)))
 
 
 def test_stale_dataset_bulletin_is_rejected_in_strict_mode():
     context = _context(dataset_attributes={"bulletin_date": "2024-01-09"})
-    with pytest.raises(IssueTimeResolutionError, match="无法确定权威"):
+    with pytest.raises(IssueTimeResolutionError, match="无法确定可审计"):
         SourceIssueTimeResolver().resolve(context)
 
 
@@ -101,7 +101,8 @@ def test_copernicus_official_catalogue_update_time():
         dataset_id="dataset-a",
     )
     evidence = CopernicusCatalogueIssueTimeResolver(describe).resolve(context)
-    assert evidence.method is IssueTimeMethod.COPERNICUS_CATALOGUE
+    assert evidence.method is IssueTimeMethod.COPERNICUS_SERVICE_SYNC
+    assert not evidence.authoritative
     assert evidence.issue_time == datetime(2026, 7, 15, 6, 30, tzinfo=UTC)
 
 

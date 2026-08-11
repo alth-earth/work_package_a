@@ -43,6 +43,12 @@ def download():
         coords={{"time": times, "latitude": [75.0], "longitude": [20.0]}},
         attrs={{"copernicus_dataset_id": DATASET_ID}},
     )
+    dataset["vxsi"].attrs.update(
+        {{"units": "m s-1", "standard_name": "eastward_sea_ice_velocity"}}
+    )
+    dataset["vysi"].attrs.update(
+        {{"units": "m s-1", "standard_name": "northward_sea_ice_velocity"}}
+    )
     return {{"route-a": dataset}}
 """,
         encoding="utf-8",
@@ -77,7 +83,8 @@ def download():
     }
     assert all(record.issue_time == now for record in result.records)
     assert all(
-        record.metadata["issue_time_evidence"]["method"] == "copernicus_catalogue"
+        record.metadata["issue_time_evidence"]["method"] == "copernicus_service_sync"
         for record in result.records
     )
+    assert all(record.quality_flag.value == "suspect" for record in result.records)
     assert len(list((tmp_path / "data" / "raw").rglob("*.metadata.json"))) == 2

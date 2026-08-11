@@ -16,6 +16,12 @@ def test_publisher_splits_frames_writes_sidecars_and_registers_manifest(tmp_path
         },
         coords={"time": times, "latitude": [70.0], "longitude": [18.0, 19.0]},
     )
+    dataset["vxsi"].attrs.update(
+        {"units": "m s-1", "standard_name": "eastward_sea_ice_velocity"}
+    )
+    dataset["vysi"].attrs.update(
+        {"units": "m s-1", "standard_name": "northward_sea_ice_velocity"}
+    )
     evidence = IssueTimeEvidence(
         issue_time=datetime(2026, 7, 14, 18, tzinfo=UTC),
         method=IssueTimeMethod.HTTP_LAST_MODIFIED,
@@ -41,4 +47,48 @@ def test_publisher_splits_frames_writes_sidecars_and_registers_manifest(tmp_path
     )
     raw_sidecars = list((tmp_path / "data" / "raw").rglob("*.metadata.json"))
     assert len(raw_sidecars) == 2
+
+
+def test_same_logical_publication_with_different_content_cannot_cross_bind(tmp_path):
+    evidence = IssueTimeEvidence(
+        issue_time=datetime(2026, 7, 14, 18, tzinfo=UTC),
+        method=IssueTimeMethod.EXPLICIT_CATALOG,
+        authority="test catalogue",
+        reference="fixture",
+        observed_at=datetime(2026, 7, 14, 19, tzinfo=UTC),
+        raw_value="2026-07-14T18:00:00Z",
+    )
+    publisher = AcquisitionPublisher(tmp_path / "data")
+
+    def dataset(value):
+        result = xr.Dataset(
+            {"vis": (("latitude", "longitude"), [[value]])},
+            coords={"latitude": [70.0], "longitude": [19.0]},
+        )
+        result["vis"].attrs["units"] = "m"
+        return result
+
+    first = publisher.publish_dataset(
+        dataset(1_000.0),
+        data_type="visibility",
+        route_id="route-a",
+        source="test",
+        version="v1",
+        issue_evidence=evidence,
+        valid_time=datetime(2026, 7, 15, tzinfo=UTC),
+    ).records[0]
+    second = publisher.publish_dataset(
+        dataset(2_000.0),
+        data_type="visibility",
+        route_id="route-a",
+        source="test",
+        version="v1",
+        issue_evidence=evidence,
+        valid_time=datetime(2026, 7, 15, tzinfo=UTC),
+    ).records[0]
+
+    assert first.data_id != second.data_id
+    assert first.metadata["publication_id"] != second.metadata["publication_id"]
+    assert first.metadata["upstream_checksum"] != second.metadata["upstream_checksum"]
+    assert len(list((tmp_path / "data" / "raw").rglob("*.metadata.json"))) == 2
     assert not list((tmp_path / "data" / "incoming").glob("*.metadata.json"))

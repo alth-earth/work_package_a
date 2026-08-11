@@ -13,6 +13,10 @@ class MissingMetadataError(MetadataValidationError):
     code = "A102"
 
 
+class ManifestConflictError(MetadataValidationError):
+    code = "A103"
+
+
 class DataValidationError(WorkPackageAError, ValueError):
     code = "A201"
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -9,6 +11,9 @@ from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
+
+import numpy as np
+import xarray as xr
 
 from arctic_route_data.errors import MetadataValidationError
 from arctic_route_data.timeutils import ensure_utc, isoformat_utc, parse_utc
@@ -34,6 +39,44 @@ QUALITY_RANK: dict[QualityFlag, int] = {
     QualityFlag.DEGRADED: 1,
     QualityFlag.MISSING: 0,
 }
+
+_SAFE_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}\Z")
+
+
+def validate_identifier(value: str, *, field: str) -> str:
+    """Validate identifiers before they are used in archive paths or logical keys."""
+
+    if not _SAFE_IDENTIFIER.fullmatch(value):
+        raise MetadataValidationError(
+            f"{field} 只能包含字母、数字、点、下划线、加号和连字符，且最长 128 字符"
+        )
+    return value
+
+
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(key): _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return tuple(_deep_freeze(item) for item in value)
+    if isinstance(value, set | frozenset):
+        return frozenset(_deep_freeze(item) for item in value)
+    return value
+
+
+def _deep_thaw(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _deep_thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple | frozenset):
+        return [_deep_thaw(item) for item in value]
+    return value
+
+
+def _freeze_dataset(dataset: xr.Dataset) -> xr.Dataset:
+    for variable in dataset.variables.values():
+        values = variable.data
+        if isinstance(values, np.ndarray):
+            values.flags.writeable = False
+    return dataset
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,18 +105,36 @@ class ManifestRecord:
         for name in ("data_id", "data_type", "route_id", "source", "version", "relative_path"):
             if not getattr(self, name).strip():
                 raise MetadataValidationError(f"{name} 不能为空")
-        if not self.variables:
+        validate_identifier(self.data_id, field="data_id")
+        validate_identifier(self.data_type, field="data_type")
+        validate_identifier(self.route_id, field="route_id")
+        validate_identifier(self.version, field="version")
+        if not self.variables or any(not item.strip() for item in self.variables):
             raise MetadataValidationError("variables 不能为空")
+        if len(set(self.variables)) != len(self.variables):
+            raise MetadataValidationError("variables 不得重复")
+        if not self.crs.strip():
+            raise MetadataValidationError("crs 不能为空")
         if len(self.bbox) != 4 or self.bbox[0] > self.bbox[2] or self.bbox[1] > self.bbox[3]:
             raise MetadataValidationError("bbox 必须为 (west, south, east, north)")
+        if not all(math.isfinite(item) for item in self.bbox):
+            raise MetadataValidationError("bbox 必须全部为有限值")
+        if len(self.resolution) != 2 or any(
+            item is not None and (not math.isfinite(item) or item <= 0)
+            for item in self.resolution
+        ):
+            raise MetadataValidationError("resolution 必须为两个正有限值或 null")
         if len(self.checksum) != 64 or any(c not in "0123456789abcdef" for c in self.checksum):
             raise MetadataValidationError("checksum 必须是小写 SHA-256")
         if self.size_bytes < 0:
             raise MetadataValidationError("size_bytes 不能为负数")
+        relative = Path(self.relative_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise MetadataValidationError("relative_path 必须是无路径逃逸的相对路径")
         object.__setattr__(self, "issue_time", ensure_utc(self.issue_time, field="issue_time"))
         object.__setattr__(self, "valid_time", ensure_utc(self.valid_time, field="valid_time"))
         object.__setattr__(self, "ingest_time", ensure_utc(self.ingest_time, field="ingest_time"))
-        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+        object.__setattr__(self, "metadata", _deep_freeze(self.metadata))
 
     def is_available_at(self, simulation_time: datetime) -> bool:
         return self.issue_time <= ensure_utc(simulation_time, field="simulation_time")
@@ -105,7 +166,7 @@ class ManifestRecord:
             "relative_path": self.relative_path,
             "size_bytes": self.size_bytes,
             "media_type": self.media_type,
-            "metadata": dict(self.metadata),
+            "metadata": _deep_thaw(self.metadata),
         }
 
     @classmethod
@@ -168,6 +229,10 @@ class StandardDataFrame:
     def __post_init__(self) -> None:
         if self.generation_id < 0:
             raise MetadataValidationError("generation_id 不能为负数")
+        if isinstance(self.payload, xr.Dataset):
+            object.__setattr__(self, "payload", _freeze_dataset(self.payload))
+        elif isinstance(self.payload, Mapping):
+            object.__setattr__(self, "payload", _deep_freeze(self.payload))
 
     @property
     def estimated_bytes(self) -> int:
@@ -178,3 +243,10 @@ class StandardDataFrame:
 
     def with_generation(self, generation_id: int) -> StandardDataFrame:
         return replace(self, generation_id=generation_id)
+
+    def consumer_copy(self) -> StandardDataFrame:
+        """Return an isolated xarray container while sharing read-only array buffers."""
+
+        if isinstance(self.payload, xr.Dataset):
+            return replace(self, payload=_freeze_dataset(self.payload.copy(deep=False)))
+        return self

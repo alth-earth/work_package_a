@@ -1,19 +1,25 @@
 [cache]
 max_memory_mb = 512
-slow_frames_per_partition = 2
-dynamic_frames_per_partition = 64
+slow_frames_per_partition = 256
+dynamic_frames_per_partition = 256
 history_hours = 48
-prefetch_horizon_hours = 24
+target_horizon_hours = 156
+minimum_complete_horizon_hours = 132
+
+[acquisition]
+gfs_step_hours = 3
+cycle_lookback_count = 4
+request_timeout_seconds = 120
 
 [clock]
 default_speed = 360.0
 
-[scenarios.offshore_murmansk_to_offshore_dikson]
+[corridors.offshore_murmansk_to_offshore_dikson]
 bbox = [30.0, 67.5, 85.0, 75.0]
 start = [33.05, 69.45]
 destination = [80.55, 73.75]
 
-[scenarios.tromso_to_svalbard]
-bbox = [10.0, 68.5, 22.0, 79.0]
+[corridors.tromso_to_svalbard]
+bbox = [10.0, 68.5, 22.0, 79.5]
 start = [18.95, 69.65]
 destination = [15.63, 78.22]

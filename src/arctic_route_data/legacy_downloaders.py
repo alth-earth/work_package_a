@@ -14,12 +14,13 @@ from typing import Any
 
 import xarray as xr
 
+from arctic_route_data.errors import DataValidationError
 from arctic_route_data.issue_time import (
     CapturedHttpExchange,
     IssueTimeContext,
     SourceIssueTimeResolver,
 )
-from arctic_route_data.models import ManifestRecord
+from arctic_route_data.models import DataCategory, ManifestRecord
 from arctic_route_data.publisher import AcquisitionPublisher
 from arctic_route_data.specs import get_data_type_spec
 from arctic_route_data.temporal_split import discover_valid_times, to_utc_datetime
@@ -180,10 +181,16 @@ class LegacyDownloaderRunner:
         for route_id, payload in _iter_route_payloads(result):
             if isinstance(payload, xr.Dataset):
                 valid_times = _valid_times_or_empty(payload)
+                category = get_data_type_spec(spec.data_type).category
+                if not valid_times and category is not DataCategory.STATIC:
+                    raise DataValidationError(
+                        f"旧下载器 {spec.name} 的 {route_id} 缺少合法 valid_time；"
+                        "动态或缓变数据不得用 issue_time 伪造有效时刻"
+                    )
                 context = IssueTimeContext(
                     source_family=spec.source_family,
                     data_type=spec.data_type,
-                    category=get_data_type_spec(spec.data_type).category,
+                    category=category,
                     source_label=spec.source_label,
                     valid_times=valid_times,
                     observed_at=observed_at,
@@ -305,10 +312,12 @@ def _iter_route_payloads(result: Any):
 
 
 def _valid_times_or_empty(dataset: xr.Dataset) -> tuple[datetime, ...]:
-    try:
-        return discover_valid_times(dataset)
-    except ValueError:
+    if not any(
+        name in dataset.variables
+        for name in ("time", "valid_time", "forecast_time", "step")
+    ):
         return ()
+    return discover_valid_times(dataset)
 
 
 def _dataset_id(dataset: xr.Dataset, module: ModuleType) -> str | None:

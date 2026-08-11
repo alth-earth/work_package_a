@@ -7,10 +7,22 @@ from arctic_route_data.cache import PartitionedABCache
 from arctic_route_data.clock import SimulationClock
 from arctic_route_data.doctor import inspect_archive
 from arctic_route_data.ingestion import IngestionPipeline
+from arctic_route_data.issue_time import IssueTimeEvidence, IssueTimeMethod
 from arctic_route_data.service import WorkPackageA
 from arctic_route_data.sources import LocalArchiveSource
 
 T0 = datetime(2026, 7, 15, 12, tzinfo=UTC)
+
+
+def _evidence(issue_time):
+    return IssueTimeEvidence(
+        issue_time=issue_time,
+        method=IssueTimeMethod.EXPLICIT_CATALOG,
+        authority="test catalogue",
+        reference="test fixture",
+        observed_at=max(issue_time, T0 + timedelta(hours=3)),
+        raw_value=issue_time.isoformat(),
+    )
 
 
 def _write_ice(path, value):
@@ -43,6 +55,7 @@ def test_ingest_replay_jump_and_archive_integrity(tmp_path):
         issue_time=T0 - timedelta(hours=6),
         valid_time=T0 + timedelta(hours=6),
         source="test",
+        issue_time_evidence=_evidence(T0 - timedelta(hours=6)),
     )
     future_file = tmp_path / "future.nc"
     _write_ice(future_file, 0.9)
@@ -53,6 +66,7 @@ def test_ingest_replay_jump_and_archive_integrity(tmp_path):
         issue_time=T0 + timedelta(hours=2),
         valid_time=T0 + timedelta(hours=1),
         source="test",
+        issue_time_evidence=_evidence(T0 + timedelta(hours=2)),
     )
 
     clock = SimulationClock(T0)
@@ -68,7 +82,9 @@ def test_ingest_replay_jump_and_archive_integrity(tmp_path):
     assert float(frames[0].payload.ice_concentration.mean()) == 0.25
 
     clock.seek(T0 + timedelta(hours=3))
-    assert cache.latest("sea_ice_concentration") is None
+    assert cache.latest(
+        "sea_ice_concentration", route_id="tromso_to_svalbard"
+    ) is None
     frames = service.prefetch(
         route_id="tromso_to_svalbard",
         data_types=["sea_ice_concentration"],
@@ -94,6 +110,7 @@ def test_seek_backwards_removes_static_frame_not_yet_published(tmp_path):
         issue_time=T0,
         valid_time=T0,
         source="test",
+        issue_time_evidence=_evidence(T0),
     )
 
     clock = SimulationClock(T0 + timedelta(hours=1))
@@ -106,11 +123,11 @@ def test_seek_backwards_removes_static_frame_not_yet_published(tmp_path):
         data_types=["bathymetry"],
     )
     assert len(frames) == 1
-    assert cache.latest("bathymetry") is not None
+    assert cache.latest("bathymetry", route_id="tromso_to_svalbard") is not None
 
     clock.seek(T0 - timedelta(hours=1))
 
-    assert cache.latest("bathymetry") is None
+    assert cache.latest("bathymetry", route_id="tromso_to_svalbard") is None
     assert (
         service.prefetch(
             route_id="tromso_to_svalbard",

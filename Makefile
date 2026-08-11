@@ -5,7 +5,7 @@ export UV_PYTHON_INSTALL_DIR ?= $(CURDIR)/.uv-python
 # 让 uv 创建的 .venv 也能找到 Mamba 提供的 ecCodes 动态库。
 export ECCODES_DIR ?= $(MAMBA_PREFIX)
 
-.PHONY: env-create env-update sync sync-all test lint check demo clean
+.PHONY: env-create env-update sync sync-all test lint check demo acquire-gfs doctor clean
 
 env-create:
 	mamba env create --prefix $(MAMBA_PREFIX) -f environment.yml
@@ -33,6 +33,14 @@ check: lint test
 
 demo:
 	$(UV) run arctic-data demo --workspace data/demo-run --reset
+
+acquire-gfs:
+	$(UV) run --extra acquisition arctic-data acquire-forecast \
+		--corridor "$${CORRIDOR:-tromso_to_svalbard}" --sources gfs \
+		--horizon-hours "$${HORIZON_HOURS:-156}"
+
+doctor:
+	$(UV) run arctic-data doctor --data-root data
 
 clean:
 	rm -rf .venv .pytest_cache .ruff_cache htmlcov .coverage data/demo-run

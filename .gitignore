@@ -27,6 +27,7 @@ data/incoming/*
 data/ready/*
 data/manifest/*
 data/quarantine/*
+data/source_snapshots/*
 data/output/*
 data/demo-run/
 !data/**/.gitkeep

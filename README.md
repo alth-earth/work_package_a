@@ -1,366 +1,286 @@
 # 北极航线预测驱动动态规划系统：工作包 A
 
-工作包 A 是整个系统的“环境数据入口”。它负责获取和接收多源数据，把不同来源、变量名、单位和时间维度的数据整理成可追溯的标准帧，再按模拟时钟安全地提供给工作包 B。
+工作包 A 是全系统唯一的环境数据入口：从工作包 A 已配置的网站/API 或历史文件取得数据，保存来源证据，拆成单时次标准帧，规范化并质检，然后按模拟时钟安全地交给 B。
 
-当前版本：`0.2.0`。当前实现面向离线回放，同时保留目录监控和旧下载器接入方式。
+当前版本为 `0.3.0`。这是科研演示数据管线，不是航行安全系统。
 
-> 第一次接手项目：先读本 README，再读 [A→B 接口](docs/AB_INTERFACE.md) 和 [B/C/D 接手契约](docs/BCD_HANDOFF.md)。AI Agent 还应遵守 [AGENTS.md](AGENTS.md) 中的工程约束。
+第一次接手建议依次阅读：
 
-## 1. A 做什么，不做什么
+1. 本 README；
+2. [A→B 接口](docs/AB_INTERFACE.md)；
+3. [本轮大修报告](docs/A_REPAIR_REPORT.md)；
+4. [发布时间政策](docs/ISSUE_TIME_POLICY.md)；
+5. AI 开发时再读 [AGENTS.md](AGENTS.md)。
 
-| 工作包 | 职责 | 当前仓库是否实现 |
+## 1. 当前能做什么
+
+| 能力 | 当前状态 | 准确边界 |
 |---|---|---|
-| A | 下载/接收、发布时间取证、拆帧、规范化、质检、归档、manifest、模拟时钟、AB 缓存 | 是 |
-| B | 时间插值/保持/外推、船型风险分量、逐时刻风险融合、生成 BC 风险场 | 否，A 只提供输入契约 |
-| C | 读取 BC 风险序列，执行时间依赖路径规划和滚动重规划，写入 CD | 否 |
-| D | 读取 CD 最新路线和指标，展示风险、航线、船位和模拟时间 | 否 |
+| NOAA GFS 未来窗 | 已实现并真实联网验证 | 风、2 m 气温、能见度；从模拟时刻覆盖目标 156 h |
+| Copernicus 未来窗 | 代码、产品 ID、字段和方向语义已验证 | 官方 Toolbox 下载需要账户；当前机器无凭据，尚未把波浪、流、水位、海冰正式写入本地档案 |
+| 13 类旧下载器接入 | 已有兼容注册表和适配链 | 旧代码仍位于用户交付 ZIP，且多数只取最近/当前帧，不能冒充 156 h 预测源 |
+| NetCDF/GeoJSON 摄取 | 已实现 | 必须携带可审计 `issue_time_evidence`；非法单位、坐标、几何或内容会拒绝/降级 |
+| raw/ready/manifest | 已实现 | 内容寻址、SHA-256、不可变 revision、恢复和 doctor 检查 |
+| AB 缓存/回放 | 已实现 | 航线隔离、版本选择、代次隔离、窗口覆盖报告、防未来信息泄漏 |
+| 统一目标风险网格 | 未实现 | A 保留地理网格身份；B 负责按共享场景网格重采样和融合 |
+| 风险、船速、规划、展示 | 不属于 A | 分别由 B、C、D 完成 |
 
-A 不计算 `risk_score`、`hard_mask`、`confidence`，不生成 `route_cost_grid`，也不实现 POLARIS/RIO、A* 或界面渲染。不要把这些逻辑塞进 A 的下载或规范化代码。
+A 不生成 `risk_score`、`risk_level`、`hard_mask`、`confidence` 或
+`environment_speed_factor`，也不生成路线。B 根据 A 的环境帧生成风险和环境速度影响；C 把 B 的环境因子应用到船型基准速度，计算最终有效航速。
 
-## 2. 整体数据流
+## 2. 全系统数据来源原则
+
+本项目没有自行布设观测设备。正式输入就是 A 从已配置公开网站/API 下载并保存的数据。禁止 B/C/D 绕过 A，再从本地文件名、文件修改时间或今天查询到的目录状态补造历史数据。
 
 ```text
-网站/API/历史文件
+公开网站/API/历史制品
         │
-        │  NetCDF / GRIB→xarray / GeoJSON
         ▼
-旧下载器或新数据源
-        │  同时保留源站目录、HTTP 时间和产品 ID 证据
+工作包 A：采集证据 → 拆帧 → 规范化/QC → raw + ready + manifest
+        │ StandardDataFrame；issue_time <= simulation_time
         ▼
-┌────────────────────────────── 工作包 A ──────────────────────────────┐
-│ issue_time 解析 → 多时次拆帧 → 自动 sidecar → incoming 原子发布      │
-│       → 变量/坐标/单位规范化 → 质检 → raw 归档 + ready 发布          │
-│       → SQLite manifest → 按模拟时刻过滤 → AB 有界缓存               │
-└──────────────────────────────────────────────────────────────────────┘
-                                  │ StandardDataFrame
-                                  ▼
-工作包 B：时间处理、预测、风险融合 → BC：RiskFrame 时间序列
-                                  │
-                                  ▼
-工作包 C：时间依赖规划、滚动重规划 → CD：RoutePlan 最新版本
-                                  │
-                                  ▼
-工作包 D：地图、风险图层、路线、船位、指标与时间轴
+工作包 B：时间处理/预测/风险融合/environment_speed_factor
+        │ RiskFrame
+        ▼
+工作包 C：最终有效航速、时间依赖规划、滚动重规划
+        │ RoutePlan
+        ▼
+工作包 D：只读展示
 ```
 
-最重要的隔离规则是：B/C/D 不直接读取旧下载器输出，也不扫描 A 的 `incoming`。下游只消费稳定对象或其序列化形式。
+身份约定：A 历史字段名 `ManifestRecord.route_id` 在当前系统中等同于
+`corridor_id`（数据裁剪/允许航区）。`scenario_id` 是一次完整演示配置，由共享场景层创建，不能拿具体 `plan_id` 替代。A 的 TOML 因此使用 `[corridors.*]`；CLI 的旧参数 `--scenario` 只作为兼容别名保留。
 
-## 3. 一份数据在 A 中经历什么
+## 3. 三个时间和预测窗
 
-以一个包含 `0h/6h/12h` 三个预报时次的 NetCDF 为例：
-
-1. `LegacyDownloaderRunner` 调用旧下载器，并记录数据源、产品 ID 和成功 HTTP 响应。
-2. `SourceIssueTimeResolver` 从 Copernicus catalogue、源站 `Last-Modified` 或可信文件属性取得 `issue_time`；无可靠证据时严格拒绝。
-3. `split_dataset_by_valid_time()` 读取 `valid_time`、`forecast_time`、`time` 或 `time + step`，拆成三个单时次 Dataset。
-4. `AcquisitionPublisher` 为每一帧先写 `.part`，再原子改名为 payload，最后写 sidecar。
-5. `FolderWatchSource` 只处理 payload 与 sidecar 都完整的项目；失败项进入 `quarantine/`。
-6. `IngestionPipeline` 统一变量名、经纬度、单位和 UTC 时间，写入 `ready/`，同时计算 SHA-256。
-7. `ManifestStore` 保存时间、空间、来源、版本、质量、路径和校验值。
-8. `WorkPackageA` 按模拟时刻加载允许使用的数据，写入 AB 缓存并发布到达/缺测事件。
-
-```text
-一个三时次 Dataset
-        │
-        ├── valid_time=00:00 ──► frame_00.nc + sidecar
-        ├── valid_time=06:00 ──► frame_06.nc + sidecar
-        └── valid_time=12:00 ──► frame_12.nc + sidecar
-                                      │
-                                      ▼
-                        ready 文件 + 3 条 manifest 记录
-```
-
-## 4. 三个时间必须分清
-
-| 字段 | 浅显含义 | 谁使用 |
+| 字段 | 含义 | 用途 |
 |---|---|---|
-| `issue_time` | 从什么时候起，系统才被允许知道这份资料 | A 过滤未来信息；B/C 必须继续携带 |
-| `valid_time` | 这份资料描述哪个环境时刻 | B 的插值/预测轴；C 的预计通过时刻 |
-| `ingest_time` | A 实际在什么时候收到并登记资料 | 审计、下载延迟和运维 |
+| `issue_time` | 从哪个 UTC 时刻起，模拟系统才允许知道该帧 | 防止历史回放偷看未来 |
+| `valid_time` | 数据描述的环境 UTC 时刻 | B 插值/预测、C 按 ETA 采样 |
+| `ingest_time` | A 实际登记时刻 | 运维和审计，不替代前两者 |
 
-所有时间均为 UTC。任何历史回放查询都必须满足：
+所有读取同时满足：
 
 ```text
-record.issue_time <= simulation_time
+frame.record.route_id == requested_corridor_id
+frame.record.issue_time <= as_of_time
+frame.generation_id == current_generation_id
 ```
 
-禁止用本地文件修改时间或文件名猜测缺失的 `issue_time`。详细策略见 [ISSUE_TIME_POLICY.md](docs/ISSUE_TIME_POLICY.md)。
+默认窗口不是旧文档中的 24 h：
 
-## 5. 支持的数据类型
+- 目标覆盖 `156 h`；
+- 最低完整覆盖 `132 h`，对应最长约 5.5 天演示航程；
+- `prepare_window_for_b()` 返回每类 `CoverageReport`；有内部缺口、缺少起点支撑帧或末端不足时 `complete=false`；
+- 准备窗口期间若模拟时钟推进或跳转，整次操作抛
+  `StaleGenerationError`，调用方应重试，不能混用两个 `as_of_time`。
 
-下游应使用规范变量名，不要继续传播源站变量名。
+## 4. 规范字段和物理语义
 
-| `data_type` | 规范变量 | 分类 |
+| `data_type` | 规范变量 | 分类/关键语义 |
 |---|---|---|
-| `sea_ice_concentration` | `ice_concentration` | slow |
-| `sea_ice_type` | `ice_type` | slow |
-| `sea_ice_edge` | `ice_edge` | slow |
-| `sea_ice_drift` | `ice_drift_u`, `ice_drift_v` | slow |
-| `sea_ice_thickness` | `ice_thickness` | slow |
-| `wave` | `significant_wave_height`, `mean_wave_direction`, `peak_wave_period` | dynamic |
-| `ocean_current` | `ocean_current_u`, `ocean_current_v` | slow |
-| `water_level` | `sea_surface_height` | slow |
-| `wind_field` | `wind_u10`, `wind_v10` | dynamic |
-| `temperature` | `air_temperature_2m` | dynamic |
-| `visibility` | `visibility` | dynamic |
-| `bathymetry` | `elevation` | static |
-| `long_term_restricted_area` | `restricted_area`（GeoJSON） | event |
+| `wind_field` | `wind_u10`, `wind_v10` | dynamic；真东/真北，`m s-1` |
+| `temperature` | `air_temperature_2m` | dynamic；K |
+| `visibility` | `visibility` | dynamic；m |
+| `wave` | `significant_wave_height`, `mean_wave_direction`, `peak_wave_period` | dynamic；波向为“从真北来、顺时针”，必须圆周插值 |
+| `ocean_current` | `ocean_current_u`, `ocean_current_v` | slow；真东/真北，`m s-1`；当前 Copernicus 产品为 `detided`，不含潮流 |
+| `water_level` | `sea_surface_height` | slow；m |
+| `sea_ice_concentration` | `ice_concentration` | slow；0..1 |
+| `sea_ice_type` | `ice_type` | slow；分类变量 |
+| `sea_ice_edge` | `ice_edge` | slow；分类变量 |
+| `sea_ice_drift` | `ice_drift_u`, `ice_drift_v` | slow；真东/真北，`m s-1` |
+| `sea_ice_thickness` | `ice_thickness` | slow；m |
+| `bathymetry` | `elevation` | static；相对海平面向上为正，海底通常为负 |
+| `long_term_restricted_area` | `restricted_area` | event；GeoJSON 分类来源，不自动等于硬禁航 |
 
-规范变量、别名和单位的唯一代码来源是 `src/arctic_route_data/specs.py`。
+矢量旋转的规则是“证据优先”：`eastward/northward` 的 CF `standard_name`
+明确表示已经是真东/真北，禁止再次旋转；只有明确的投影 X/Y 分量且极地投影参数完整时才旋转。变量名 `vxo/vyo/vxsi/vysi` 本身不足以证明坐标系。
 
-## 6. 项目结构
+A 生成 `grid_id`、`coordinate_digest`、`grid_topology` 和来源投影摘要，但不把异构源强行重采样到一个网格。B 应选择共享场景目标网格：连续标量用合适的连续插值，分类/掩膜用 nearest，矢量在真东/真北分量上插值，波向用 `sin/cos` 圆周插值。
+
+## 5. 目录和不可变发布
 
 ```text
-work_package_a/
-├── README.md                         # 项目入口与 B/C/D 接手说明
-├── CHANGELOG.md                      # 原 README 与首次交付记录
-├── AGENTS.md                         # AI Agent 修改本仓库时的强约束
-├── environment.yml                   # Mamba：Python、ecCodes、NetCDF、HDF5
-├── pyproject.toml / uv.lock          # uv：Python 依赖、CLI、测试和锁文件
-├── Makefile                          # 环境、测试、静态检查、demo
-├── configs/
-│   ├── work_package_a.toml           # 缓存、时钟和场景示例
-│   └── source_release.example.toml   # 数据源发布时间策略示例
-├── schemas/
-│   └── incoming-sidecar.schema.json  # 上游 sidecar 结构
-├── docs/
-│   ├── AB_INTERFACE.md               # A→B 已实现接口
-│   ├── BCD_HANDOFF.md                # B→C→D 建议契约和开发清单
-│   ├── ISSUE_TIME_POLICY.md          # issue_time 证据与降级规则
-│   ├── LEGACY_MIGRATION.md           # 13 个旧下载器的迁移方式
-│   └── ARCHITECTURE_TRACE.md         # 架构要求到代码/测试的对应关系
-├── src/arctic_route_data/
-│   ├── legacy_downloaders.py         # 13 个旧入口注册、调用和 HTTP 元数据捕获
-│   ├── issue_time.py                 # 发布时间解析和证据对象
-│   ├── temporal_split.py             # 多时次 Dataset 拆帧
-│   ├── publisher.py                  # payload + sidecar 原子发布
-│   ├── normalization.py              # 坐标、变量和单位标准化
-│   ├── ingestion.py                  # 质检、SHA-256、ready 发布
-│   ├── manifest.py                   # SQLite 索引和防未来查询
-│   ├── sources.py                    # DataSource / LocalArchiveSource
-│   ├── folder_watch.py               # incoming 扫描、归档和隔离失败项
-│   ├── models.py                     # ManifestRecord / StandardDataFrame
-│   ├── clock.py                      # 模拟时钟和 generation_id
-│   ├── cache.py                      # 类型→变量→时间的 AB 有界缓存
-│   ├── events.py                     # 到达、缺测和跳转事件
-│   ├── service.py                    # A 的预取与下游读取入口
-│   └── cli.py                        # arctic-data 命令行
-├── tests/                             # 单元与端到端测试
-└── data/
-    ├── incoming/                      # 等待摄取；sidecar 最后出现
-    ├── raw/                           # payload 与证据 sidecar 的原始归档
-    ├── ready/                         # B 可读取的规范化帧
-    ├── manifest/manifest.sqlite3      # 主索引
-    ├── quarantine/                    # 失败数据，不参与计算
-    └── output/                        # 运行输出；不进入 Git
+data/
+├── source_snapshots/   # 下载的 GRIB/NetCDF 与 HTTP 证据；运行数据，不进 Git
+├── incoming/           # payload 完成后，sidecar 最后出现
+├── raw/                # payload + sidecar 原始归档
+├── ready/              # 规范化、内容寻址的单时次帧
+├── manifest/           # SQLite 主索引
+├── quarantine/         # 无效输入
+└── output/             # 运行输出
 ```
 
-## 7. A 提供给 B 的真实接口
+发布顺序固定为：
 
-A 的稳定输出是 `StandardDataFrame`：
+```text
+payload.part → payload → payload.metadata.json
+```
+
+sidecar 必须把内容和证据绑定起来。简化示例：
+
+```json
+{
+  "file": "wind.nc",
+  "payload_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "payload_size_bytes": 12345,
+  "publication_id": "gfs-20260811T06Z-f003-wind",
+  "data_type": "wind_field",
+  "route_id": "tromso_to_svalbard",
+  "issue_time": "2026-08-11T11:16:10Z",
+  "valid_time": "2026-08-11T09:00:00Z",
+  "source": "NOAA GFS/NOMADS",
+  "version": "gfs-20260811T06Z-example",
+  "quality_flag": "suspect",
+  "metadata": {
+    "issue_time_evidence": {
+      "issue_time": "2026-08-11T11:16:10Z",
+      "method": "conservative_retrieval",
+      "authority": "NOAA GFS/NOMADS",
+      "reference": "saved request URL",
+      "observed_at": "2026-08-11T11:16:10Z",
+      "raw_value": "2026-08-11T11:16:10Z",
+      "authoritative": false
+    },
+    "forecast_reference_time": "2026-08-11T06:00:00Z",
+    "forecast_lead_hours": 3
+  }
+}
+```
+
+完整结构见 [incoming-sidecar.schema.json](schemas/incoming-sidecar.schema.json)。非权威证据不能把 payload 标成 `good`。
+
+## 6. Mamba + uv 环境
+
+Mamba 提供 Python、ecCodes、NetCDF/HDF5 本地库；uv 安装并锁定 Python 包。
+直接运行 cfgrib 时必须能找到 Mamba 的 ecCodes；Makefile 和 CLI 已自动处理项目内 `.mamba-env`。
+
+```bash
+cd /root/my_project/work_package_a
+make env-create
+make sync-all
+make check
+```
+
+常用命令：
+
+```bash
+# 查看经过类型校验的有效配置
+make doctor
+.mamba-env/bin/uv run arctic-data config-show
+
+# 采集默认走廊的 156 h GFS；也可 CORRIDOR=offshore_murmansk_to_offshore_dikson
+make acquire-gfs
+
+# 等价的显式命令
+.mamba-env/bin/uv run --extra acquisition arctic-data acquire-forecast \
+  --data-root data \
+  --corridor tromso_to_svalbard \
+  --sources gfs \
+  --types wind_field temperature visibility \
+  --horizon-hours 156
+
+# 按历史时刻回放；as-of 必须不早于所需帧的 issue_time
+.mamba-env/bin/uv run arctic-data replay \
+  --data-root data \
+  --route-id tromso_to_svalbard \
+  --at 2026-08-11T11:17:29Z \
+  --types wind_field temperature visibility \
+  --horizon-hours 156
+```
+
+Copernicus 官方 Toolbox 需要免费账户，使用以下任一成对环境变量：
+
+```text
+COPERNICUSMARINE_SERVICE_USERNAME / COPERNICUSMARINE_SERVICE_PASSWORD
+COPERNICUSMARINE_USERNAME         / COPERNICUSMARINE_PASSWORD
+```
+
+缺失或只配置一半会在下载前失败，不进入交互式登录。代码显式请求
+`dataset_part="default"`（经纬度重网格）并保存该选择。Copernicus 的 ARCO
+分块传输可能远大于最终子集；先跑一条走廊并预留数 GB 空间。
+
+## 7. A→B 最小调用
 
 ```python
-@dataclass(frozen=True)
-class StandardDataFrame:
-    record: ManifestRecord      # 时间、空间、来源、版本、质量、文件位置
-    payload: xr.Dataset | dict  # 单 valid_time 的环境帧或 GeoJSON
-    generation_id: int          # 模拟跳转代次
-```
-
-`ManifestRecord` 的关键字段：
-
-```text
-data_id, data_type, category, route_id, variables,
-issue_time, valid_time, ingest_time,
-bbox, crs, resolution,
-source, quality_flag, version, checksum,
-relative_path, media_type, metadata
-```
-
-B 的最小接入代码：
-
-```python
-from datetime import UTC, datetime
-
 from arctic_route_data.cache import PartitionedABCache
 from arctic_route_data.clock import SimulationClock
 from arctic_route_data.service import WorkPackageA
 from arctic_route_data.sources import LocalArchiveSource
 
-clock = SimulationClock(datetime(2026, 7, 15, 12, tzinfo=UTC))
 a = WorkPackageA(
     source=LocalArchiveSource("data"),
-    clock=clock,
+    clock=SimulationClock(as_of_time),
     cache=PartitionedABCache(max_memory_mb=512),
 )
-
-a.prefetch(
-    route_id="tromso_to_svalbard",
-    data_types=["wind_field", "wave", "sea_ice_concentration", "bathymetry"],
-    horizon_hours=24,
+prepared = a.prepare_window_for_b(
+    route_id="tromso_to_svalbard",  # 等同共享配置 corridor_id
+    data_types=["wind_field", "temperature", "visibility"],
+    target_horizon_hours=156,
+    minimum_complete_horizon_hours=132,
 )
 
-wind_frames = a.window_for_b("wind_field", hours_before=48, hours_after=24)
-for frame in wind_frames:
-    assert frame.record.issue_time <= clock.now
-    dataset = frame.payload
-    valid_time = frame.record.valid_time
+for data_type, report in prepared.coverage.items():
+    if not report.complete:
+        raise RuntimeError(f"{data_type} 覆盖不足: {report}")
+    for frame in prepared.frames[data_type]:
+        assert frame.record.issue_time <= as_of_time
+        assert frame.record.route_id == "tromso_to_svalbard"
 ```
 
-B 开发时必须做到：
+精确缓存、revision、租用和跳转语义见 [AB_INTERFACE.md](docs/AB_INTERFACE.md)。
 
-- 只使用 `issue_time <= clock.now` 的帧；A 已过滤，B 仍应保留断言。
-- 按 `valid_time` 做 `PASSTHROUGH/HOLD/INTERPOLATE/EXTRAPOLATE`，不要按文件顺序计算。
-- 使用 `quality_flag`、数据龄期和预测时长计算 B 自己的 `confidence`。
-- 把 `source/version/data_id` 汇总进风险帧的 `source_summary`。
-- 计算任务携带 `generation_id`；模拟跳转后丢弃旧代次结果。
-- 不把 A 的 `quality_flag` 直接当成风险模型置信度。
+## 8. 本机真实运行结果（2026-08-11）
 
-模拟跳转时 A 会清空动态、缓变和事件帧。static 帧只有在其
-`issue_time <= 新 simulation_time` 时才会改挂到新代次继续复用；向过去跳转不会保留当时尚未发布的静态资料。直接调用缓存重置接口却不提供新模拟时刻时，缓存会安全清空 static，而不是假定它可见。
+已实际从 NOAA/NOMADS 下载两版不可变快照并保留在本仓库运行目录 `data/`：
 
-精确查询方法和缓存租用方式见 [AB_INTERFACE.md](docs/AB_INTERFACE.md)。
+- 周期：`2026-08-11 06Z`；
+- 时效：`f000..f162`，每 3 h；
+- `wind_field`、`temperature`、`visibility` 各 55 帧，共 165 条首轮记录；
+- `valid_time`：`2026-08-11 06:00Z .. 2026-08-18 00:00Z`；
+- 首轮旧 bbox 快照：`gfs-20260811T06Z-67361a2f294f`，165 条；
+- 与 C 对齐到 bbox `[10.0,68.5,22.0,79.5]` 后的新快照：
+  `gfs-20260811T06Z-8840810b511f`，165 条；
+- manifest 共保留 330 条历史 revision，数据目录约 34 MB；
+- `doctor`：330 条全部通过，零错误/警告；
+- 以 `2026-08-11T11:50:21Z` 回放会选择新 bbox 快照；三类各 53 个窗口支撑帧，
+  `CoverageReport.complete=true`，无内部缺口并覆盖 132 h 最低要求。
 
-## 8. C 和 D 应拿到什么
+这些帧标为 `suspect`，不是因为内容已知错误，而是 NOMADS filter 响应的
+`Last-Modified` 不能安全等同于模型生产发布时间；A 采用成功获取时刻作为保守门禁。运行数据已保留但被 `.gitignore` 排除，不会随代码提交。
 
-当前仓库没有实现 BC/CD 缓存，但为了让后续工作能直接开展，建议接口已经固定在 [BCD_HANDOFF.md](docs/BCD_HANDOFF.md)。以下是摘要。
+本节记录的是本机实测快照，不代表持续更新服务。重新采集会形成新的不可变 revision；
+较新的 `as_of` 会按 revision 规则选中 bbox=79.5 的新版本，旧记录仍可审计。
 
-### 8.1 B → C：`RiskFrame`
+注意：当前 C 的既有 `demo_tromso_to_svalbard_v1` 场景时域是
+`2026-07-31 .. 2026-08-03`，而这批真实 GFS 是 `2026-08-11 .. 2026-08-18`。
+二者空间走廊一致、时间并不一致，不能静默拼接。B/C 联调应新增一个版本化场景快照，
+使用 `as_of/simulation_start >= 2026-08-11T11:50:20.281323Z` 并引用新
+`dataset_snapshot_id`；不要修改旧场景后仍沿用旧 ID/digest。
 
-```text
-schema_version, scenario_id, generation_id,
-valid_time, as_of_time, generated_at, model_version,
-grid, risk_score, risk_level, hard_mask,
-confidence, source_summary
-```
+## 9. 已知未解决项
 
-C 读取覆盖规划时域的 `RiskFrame` 序列，根据船舶预计进入网格的时刻选择/插值风险，而不是始终使用当前风险图。`hard_mask` 是不可扩展节点；`risk_score` 是软代价的一部分。
+- 当前机器没有 Copernicus 凭据，因此没有声称波浪、海流、水位和海冰已真实入库；
+- Copernicus 海流产品是 `detided`，项目目前没有额外潮流源；
+- A 未实现跨源统一目标网格，B 必须做覆盖检查和明确重采样；
+- 旧 13 类脚本不是本仓库自包含的正式未来窗采集器；详情见
+  [LEGACY_MIGRATION.md](docs/LEGACY_MIGRATION.md)；
+- `FolderWatchSource.scan_once()` 当前推荐单一摄取 owner。多 watcher 在极慢任务超过
+  300 s 时没有 heartbeat/租约续期；不要把它部署成无协调的多消费者队列；
+- 保护区只做几何、来源和法律效果字段校验；A 永远不因图层名自动生成硬掩膜；
+- 精确源产品发布时间在部分服务不可得，保守获取时刻保证“不偷看未来”，但不能用于精确延迟统计；
+- 当前真实下载只覆盖 Tromsø–Svalbard 的 GFS 三类；另一走廊和 Copernicus 数据仍需单独采集验收。
+- 真实 GFS 与 C 当前旧演示场景的时域不同；需要新增共享场景版本后才能做正式
+  A→B→C 联调。
 
-### 8.2 C → D：`RoutePlan`
+完整修复清单、测试证据和保留风险见 [A_REPAIR_REPORT.md](docs/A_REPAIR_REPORT.md)。
 
-```text
-schema_version, scenario_id, generation_id,
-route_id, plan_version, generated_at, as_of_time, start_time, mode,
-waypoints[{longitude, latitude, eta, recommended_speed}],
-distance_km, eta_hours, avg_risk, max_risk,
-compute_ms, replan_reason, source_risk_versions
-```
+## 10. 文档导航
 
-D 只读取 CD 中最新的不可变 `RoutePlan`，新路线没算完时继续显示上一版并标注更新时间。D 可以按需读取 BC 风险切片和静态底图，但不直接调用 A/B/C 内部计算函数，也不能持有计算锁。
-
-AB 已携带 `route_id` 和 `generation_id`，但当前尚无独立 `scenario_id` 字段；B 创建计算任务时应补充 `scenario_id`，并将它和 `generation_id` 一起传播到 BC/CD。模拟时钟跳转会提升 `generation_id`，B、C、D 必须丢弃旧代次迟到结果。
-
-## 9. 数据目录与 sidecar
-
-下载器不得直接把半成品放进 `ready/`。发布顺序必须是：
-
-```text
-payload.nc.part ──写完──► payload.nc ──最后──► payload.metadata.json
-```
-
-最小 sidecar：
-
-```json
-{
-  "file": "sample.nc",
-  "data_type": "sea_ice_drift",
-  "route_id": "tromso_to_svalbard",
-  "issue_time": "2026-07-15T03:00:00Z",
-  "valid_time": "2026-07-15T06:00:00Z",
-  "source": "Copernicus Marine",
-  "version": "product-version",
-  "quality_flag": "good",
-  "metadata": {
-    "issue_time_evidence": {
-      "method": "copernicus_catalogue",
-      "authority": "Copernicus Marine Data Store",
-      "reference": "saved catalogue field path",
-      "observed_at": "2026-07-15T03:10:00Z",
-      "raw_value": "2026-07-15T03:00:00Z",
-      "authoritative": true
-    }
-  }
-}
-```
-
-完整 JSON Schema 在 `schemas/incoming-sidecar.schema.json`。
-
-## 10. 环境、验证与常用命令
-
-Mamba 管理 Python 与 ecCodes/NetCDF/HDF5 本地库；uv 管理 Python 包和锁文件。
-
-```bash
-cd /root/my_project/work_package_a
-
-make env-create     # 创建项目内 .mamba-env
-make sync-all       # 按 uv.lock 安装核心、开发和采集依赖
-make check          # Ruff、全部测试、锁文件检查和 CLI 检查
-make demo           # 生成小型场景并验证未来信息不会提前泄漏
-```
-
-其他常用命令：
-
-```bash
-# 校验归档文件、路径和 SHA-256
-.mamba-env/bin/uv run arctic-data doctor --data-root data
-
-# 按模拟时刻查询可用帧
-.mamba-env/bin/uv run arctic-data list \
-  --data-root data \
-  --route-id tromso_to_svalbard \
-  --data-type wind_field \
-  --start 2026-07-15T00:00:00Z \
-  --end 2026-07-16T00:00:00Z \
-  --as-of 2026-07-15T12:00:00Z
-
-# 运行一个资料包内的旧下载器；必须经过 A 正式入口才会自动写 sidecar
-.mamba-env/bin/uv run --extra acquisition arctic-data legacy-run \
-  --legacy-root "/path/to/获取数据/获取数据" \
-  --data-root data \
-  --downloader sea_ice_drift
-```
-
-Copernicus 旧下载器使用环境变量 `COPERNICUSMARINE_USERNAME` 和 `COPERNICUSMARINE_PASSWORD`。不要把真实凭据写入代码、README、配置文件或 Git。
-
-## 11. AI Agent 继续开发时的最短路径
-
-### 开发 B
-
-1. 阅读 `docs/AB_INTERFACE.md` 和 `src/arctic_route_data/specs.py`。
-2. 先实现按数据类别选择时间策略的处理器，再实现风险分量。
-3. 按 `docs/BCD_HANDOFF.md` 发布不可变 `RiskFrame`。
-4. 用历史回放测试证明没有使用 `issue_time > simulation_time` 的数据。
-
-### 开发 C
-
-1. 只依赖 BC 契约，不读取 A 的 SQLite 或内部缓存。
-2. 首版实现时间依赖 A*，按预计到达时刻采样 `RiskFrame`。
-3. 输出多种路线模式和可解释指标，再增加滚动重规划。
-4. 传播 `scenario_id/generation_id/source_risk_versions`。
-
-### 开发 D
-
-1. 只消费 CD 最新值，并允许没有新结果时继续渲染旧结果。
-2. 将计算时间和渲染时间分离；不要在 UI 线程运行 B/C。
-3. 显示模拟时间、结果更新时间、数据质量、路线版本和重规划原因。
-
-### 修改 A
-
-1. 不改变三个时间的语义，不从文件名/mtime 猜 `issue_time`。
-2. 新数据类型先修改 `specs.py`，再补规范化、sidecar/manifest 和端到端测试。
-3. 任何接口字段变化都要同步 JSON Schema、相关文档和合同测试。
-4. 完成后运行 `make check`。
-
-## 12. 当前完成度与已知边界
-
-已完成：13 类旧下载入口、发布时间证据、自动拆帧、sidecar、规范化、原始归档、ready 发布、SQLite manifest、防未来查询、模拟时钟、AB 缓存、质量/缺测事件和测试环境。
-
-尚未实现：统一目标网格重采样、常驻守护进程、对象存储、B 风险模型、BC/CD 缓存、C 路径规划和 D 界面。真实联网下载仍受源站可用性、账号及产品权限影响；源站没有可审计时间时，严格模式会拒绝，保守模式会以成功获取时刻发布并标为 `suspect`。
-
-## 13. 文档导航
-
-- [CHANGELOG.md](CHANGELOG.md)：工作包 A 首次交付和历史实现说明
-- [docs/AB_INTERFACE.md](docs/AB_INTERFACE.md)：A 已实现的查询、缓存和时间接口
-- [docs/BCD_HANDOFF.md](docs/BCD_HANDOFF.md)：B/C/D 建议对象、边界和验收清单
-- [docs/ISSUE_TIME_POLICY.md](docs/ISSUE_TIME_POLICY.md)：发布时间证据和安全降级
-- [docs/LEGACY_MIGRATION.md](docs/LEGACY_MIGRATION.md)：原“获取数据”脚本接入方式
-- [docs/ARCHITECTURE_TRACE.md](docs/ARCHITECTURE_TRACE.md)：架构要求、代码位置和测试证据
+- [A→B 接口](docs/AB_INTERFACE.md)
+- [本轮大修报告](docs/A_REPAIR_REPORT.md)
+- [`issue_time` 政策](docs/ISSUE_TIME_POLICY.md)
+- [旧下载器迁移边界](docs/LEGACY_MIGRATION.md)
+- [架构追踪](docs/ARCHITECTURE_TRACE.md)
+- [跨 B/C/D 边界摘要](docs/BCD_HANDOFF.md)
+- [变更记录](CHANGELOG.md)

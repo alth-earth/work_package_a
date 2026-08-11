@@ -1,270 +1,170 @@
-# B/C/D 接手契约与开发清单
+# 跨 B/C/D 边界导航（A 侧摘要）
 
-本文用于后续开发者和 AI Agent 在不破坏工作包 A 时间语义的前提下继续实现 B、C、D。
+这份文件不再复制一套容易漂移的 BC/CD dataclass。当前状态是：
 
-状态说明：A→B 对象已经在代码中实现；下文的 BC/CD 对象是依据架构设计整理出的建议 `v1` 契约，尚未在本仓库实现。开始 B/C 开发时应把它们固化为 dataclass/Protocol、序列化 Schema 和合同测试。
+- A→B：以本仓库 [AB_INTERFACE.md](AB_INTERFACE.md) 为真源；
+- B→C：以 `/root/my_project/work_package_c/docs/BC_CONTRACT.md`、Python 模型和
+  `risk-frame-v1.schema.json` 为真源；
+- C→D：以 `/root/my_project/work_package_c/docs/CD_CONTRACT.md`、Python 模型和
+  `route-plan-v1.schema.json` 为真源；
+- B 待完善项：以
+  `/root/my_project/work_package_b_handoff/工作包B矛盾与完善开发交接书.md` 为实施清单。
 
-## 1. 模块依赖方向
+本文件只冻结依赖方向和 A 必须为下游提供的前置条件。
+
+## 1. 依赖方向
 
 ```text
-A --StandardDataFrame--> B --RiskFrame--> C --RoutePlan--> D
-│                       │               │               │
-└─ 环境数据和来源证据    └─ 风险与置信度  └─ 路线与指标  └─ 只渲染
+A --StandardDataFrame--> B --RiskFrame v1--> C --RoutePlan v1--> D
 ```
 
-禁止反向调用：D 不调用 C 的求解器，C 不调用 B 的内部模型，B 不直接扫描 A 的 `incoming/raw`。模块之间只通过稳定对象和缓存接口通信。
+- B 不扫描 A 的 incoming/raw，不根据文件名恢复时间；
+- C 不读取 A 的 SQLite/缓存，也不调用 B 内部模型；
+- D 不调用 C 求解器；
+- 各边界只交换不可变、版本化对象和明确查询接口。
 
-## 2. 全链路共同语义
+## 2. 全链路共同身份
 
-| 字段 | 规则 |
+| 字段 | 精确含义 |
 |---|---|
-| `route_id` | A 中的数据裁剪/航线标识；必须保留到 B 的来源摘要 |
-| `scenario_id` | 一次完整演示或试验的标识；A 当前未显式建模，由 B 任务创建并传播到 BC/CD |
-| `generation_id` | 模拟跳转代次；任何模块都不得发布或显示旧代次迟到结果 |
-| `valid_time` | 环境帧或风险帧所描述的模型时间 |
-| `as_of_time` | 本次计算允许知道的数据截止时刻；所有输入 `issue_time <= as_of_time` |
-| `generated_at` | 真实计算完成时间，仅用于性能和审计 |
-| `schema_version` | 接口结构版本，例如 `bc.risk-frame.v1` |
-| `model_version` | 算法和参数版本；与 `schema_version` 不同 |
+| `scenario_id` | 一次完整演示/试验配置 |
+| `corridor_id` | 数据裁剪和允许航区；A 的历史字段 `route_id` 映射到这里 |
+| `vessel_profile_id` | 船型/性能上下文；当前 demo 船型明确 `demo_unvalidated` |
+| `config_digest` | 一次运行所用共享配置快照 SHA-256 |
+| `generation_id` | seek/reset 隔离代次 |
+| `as_of_time` | 本次任务允许知道信息的截止 UTC 时刻 |
+| `valid_time` | 环境/风险描述的 UTC 时刻 |
+| `generated_at` | 算法墙钟完成时刻，只用于审计/性能 |
 
-所有时间使用 UTC ISO-8601；Python 对象使用带时区的 `datetime`。
+`corridor_id` 不是 `scenario_id`，更不是具体 `plan_id`。
 
-## 3. A → B：已实现契约
+## 3. A 为 B 提供什么
 
-### 3.1 输入对象
+每个 `StandardDataFrame`：
 
-```python
-@dataclass(frozen=True)
-class StandardDataFrame:
-    record: ManifestRecord
-    payload: xarray.Dataset | dict
-    generation_id: int
+- 只有一个 valid time；
+- `issue_time <= as_of_time`；
+- 有 `route_id/corridor_id`、generation、source/version/checksum/quality；
+- 有 source snapshot、内容 QC、网格 identity 和规范化摘要；
+- payload 不可变；
+- 可用 `prepare_window_for_b` 检查 156 h 目标、132 h 最低覆盖和内部缺口。
+
+A 不提供共享目标风险网格，不输出风险或速度因子。
+
+## 4. B 当前必须向 C 输出什么
+
+正式 `RiskFrame v1` 顶层至少冻结：
+
+```text
+schema_version="bc.risk-frame.v1"
+risk_id
+scenario_id, corridor_id, vessel_profile_id, config_digest, generation_id
+valid_time, as_of_time, generated_at, model_version
+payload, source_summary, provenance="formal"
 ```
 
-其中 `payload` 已经完成：
+payload 当前必须是 EPSG:4326、严格递增的一维 latitude/longitude 二维网格：
 
-- 单 `valid_time` 拆分；
-- 变量名和常用单位统一；
-- 坐标清洗；
-- 质量、来源和 SHA-256 登记；
-- `issue_time <= as_of_time` 检查。
-
-### 3.2 B 应调用的入口
-
-| 入口 | 用途 |
+| 变量 | 语义 |
 |---|---|
-| `WorkPackageA.prefetch(...)` | 围绕模拟时刻把指定类型加载到 AB |
-| `WorkPackageA.latest_for_b(data_type)` | 读取某类最新缓存帧 |
-| `WorkPackageA.window_for_b(...)` | 读取按 `valid_time` 排序的窗口 |
-| `DataSource.get_bracketing(...)` | 获取目标时刻前后帧，用于插值 |
-| `cache.lease(data_id)` | 保证计算期间帧不被回收 |
-| `EventBus.subscribe(...)` | 订阅数据到达、缺测和代次变化 |
+| `risk_score` | `[0,1]` 连续软风险 |
+| `risk_level` | `1..5` 解释/展示等级 |
+| `hard_mask` | True 表示 C 不得扩展 |
+| `confidence` | `[0,1]` 数据+预测+模型置信度 |
+| `environment_speed_factor` | 正式帧必需，`(0,1]`；B 的综合环境影响 |
 
-### 3.3 按数据类别处理
+责任冻结：B 不输出最终有效船速；C 用
+`environment_speed_factor × 船型静水基准速度` 计算最终有效航速，并做最低安全/操舵
+检查。C 不从 `risk_score` 或 `confidence` 再折一次速度，避免双重计权。
 
-| A 分类 | B 默认策略 | 注意事项 |
-|---|---|---|
-| `static` | `PASSTHROUGH` | 不预测；转为基础图层或约束候选 |
-| `slow` | `HOLD` | 默认零阶保持；有可靠物理模型后再替换 |
-| `dynamic` | `INTERPOLATE/EXTRAPOLATE` | 设最大外推时长，超出后降低置信度或缺测 |
-| `event` | 按生效/失效时间布尔叠加 | 不对几何边界做普通线性插值 |
+## 5. 为什么不能只生成 24 h
 
-### 3.4 来源摘要不能丢
+当前演示最长航程约 5.5 天。C v1 不支持在规划图中“等待未来风险帧”，也不在 BC
+窗外外推。因此 B 必须按请求覆盖实际 ETA 时域；A 的默认目标 156 h、最低 132 h
+就是为此设置。
 
-B 每个风险帧至少保存如下输入追踪信息：
+短窗滚动可以作为未来优化，但必须先实现：
 
-```json
-{
-  "data_id": "...",
-  "data_type": "wind_field",
-  "issue_time": "2026-07-15T06:00:00Z",
-  "valid_time": "2026-07-15T12:00:00Z",
-  "source": "NOAA GFS/NOMADS",
-  "version": "...",
-  "quality_flag": "good"
-}
-```
+- 明确滚动触发；
+- 新旧 RiskFrame/RoutePlan 的 revision 围栏；
+- 当前路线在窗尾的安全策略；
+- 缺帧/服务失败时 fail closed；
+- 跨窗口可重复验收。
 
-## 4. B → C：建议 `RiskFrame v1`
+在这些机制完成前，不得把 24 h 风险图冒充完整 2–5.5 天航程输入。
 
-### 4.1 Python 形状
+## 6. C 当前的采样规则
 
-```python
-@dataclass(frozen=True)
-class RiskFrame:
-    schema_version: str          # "bc.risk-frame.v1"
-    risk_id: str
-    scenario_id: str
-    route_id: str
-    generation_id: int
-    valid_time: datetime
-    as_of_time: datetime
-    generated_at: datetime
-    model_version: str
-    payload: xarray.Dataset
-    source_summary: tuple[dict, ...]
-```
+- `risk_score`：空间双线性、时间线性；
+- `hard_mask`：所有参与单元和时间边界取 OR；
+- `confidence`、`environment_speed_factor`：参与值取保守最小；
+- `risk_level`：由采样后的 risk score 重算；
+- 上下文、网格、窗口或帧间距不匹配：拒绝，不当作安全。
 
-`payload` 建议使用单时次二维网格：
+B 做 A→目标网格处理时：矢量分量分别插值、波向圆周插值、分类/掩膜 nearest/
+保守处理；禁止把 A 的 `quality_flag` 直接复制成 confidence。
+
+## 7. 来源追踪
+
+正式 B 的 `source_summary` 应逐项映射 A：
 
 ```text
-coordinates:
-  longitude / latitude，或 x / y + CRS
-
-variables:
-  risk_score    float32  [0, 1]   连续综合风险
-  risk_level    uint8    [1, 5]   离散展示等级
-  hard_mask     bool              True 表示不可通行
-  confidence    float32  [0, 1]   B 的综合可信度
-
-attributes:
-  valid_time, as_of_time, generated_at,
-  scenario_id, route_id, generation_id,
-  schema_version, model_version, crs
+source_id <- record.source
+data_id <- record.data_id
+issue_time <- record.issue_time
+valid_time <- record.valid_time
+version <- record.version
+quality_flag <- record.quality_flag.value
+checksum <- record.checksum
 ```
 
-若 B 需要保留可解释性，可增加 `risk_ice/risk_wave/risk_wind/...` 分量，但 C 只能依赖上面的四个必需变量。
+所有正式来源 `issue_time` 非空且 `<= RiskFrame.as_of_time`。若一帧使用多个输入时刻/
+变量，必须全部列出并确定性去重。
 
-### 4.2 BC 缓存协议
+## 8. 限制区和硬掩膜
 
-```python
-class RiskSource(Protocol):
-    def publish(self, frame: RiskFrame) -> None: ...
-    def get_window(
-        self,
-        start: datetime,
-        end: datetime,
-        *,
-        scenario_id: str,
-        generation_id: int,
-        as_of: datetime,
-    ) -> Sequence[RiskFrame]: ...
-    def latest_before(...) -> RiskFrame | None: ...
-```
+A 只验证 GeoJSON 几何、经纬度、来源/authority 和可选
+`navigation_effect=hard|soft|information`，并固定
+`automatic_hard_mask_allowed=false`。
 
-推荐行为：
+海洋保护区、规划区、军事区等图层名不天然等于法律禁航。B/C 必须由版本化场景政策
+决定 hard/soft；未知法律效果至少降低置信度，不能自动硬屏蔽，也不能自动当安全。
 
-- 按 `valid_time` 排序，默认至少覆盖未来 24 h；
-- 同一 `valid_time` 有多个版本时，选择当前 `as_of_time` 可见的最新可靠版本；
-- 发布后对象不可变；
-- 达到容量上限时优先保留当前规划窗口；
-- `generation_id` 不匹配时拒绝写入和读取。
+## 9. 共享配置过渡
 
-### 4.3 C 使用风险帧的原则
+当前可运行配置仍在 `work_package_c/configs/`，包含 scenario、vessel、planner 和
+replanning。A 只维护采集 corridors，并已把 Tromsø bbox 对齐到
+`[10.0, 68.5, 22.0, 79.5]`。
 
-C 估计船舶到达某网格的 ETA，再从相邻 `RiskFrame.valid_time` 选择或插值风险。不能用“当前风险图”覆盖整条未来航程。
+但空间一致不等于时间一致：C 现有 `demo_tromso_to_svalbard_v1` 时域为
+`2026-07-31 .. 2026-08-03`，A 本轮真实 GFS 时域为
+`2026-08-11 .. 2026-08-18`。联调必须新增版本化 scenario/dataset snapshot 和新的
+config digest，不能在旧 ID 下偷换时间与数据。
 
-```text
-船舶预计 18:30 进入网格
-        │
-        ├── 读取 18:00 RiskFrame
-        └── 读取 19:00 RiskFrame
-                │
-                ▼
-       按 BC 策略得到 18:30 风险/硬约束
-```
+未来迁移到共享 `demo_scenarios/` 与 `contracts/` 时保持 ID、version、字段和 digest
+语义不变，只改变配置根路径。A/B/C/D 不得各复制一份后独立修改。
 
-## 5. C → D：建议 `RoutePlan v1`
+## 10. 联调最小验收
 
-### 5.1 路线对象
+### A→B
 
-```python
-@dataclass(frozen=True)
-class Waypoint:
-    longitude: float
-    latitude: float
-    eta: datetime
-    recommended_speed: float
+- 每个必需 A 层 `CoverageReport.complete=true`；
+- route/corridor、generation、as-of 一致；
+- 网格覆盖共享场景 bbox；
+- source summary 可回到 A checksum/source snapshot；
+- 矢量/波向/水深语义正确。
 
+### B→C
 
-@dataclass(frozen=True)
-class RoutePlan:
-    schema_version: str          # "cd.route-plan.v1"
-    scenario_id: str
-    generation_id: int
-    route_id: str
-    plan_version: str
-    generated_at: datetime
-    as_of_time: datetime
-    start_time: datetime
-    mode: str                    # shortest / low_risk / recommended / replanned
-    waypoints: tuple[Waypoint, ...]
-    distance_km: float
-    eta_hours: float
-    avg_risk: float
-    max_risk: float
-    compute_ms: float
-    replan_reason: str
-    source_risk_versions: tuple[str, ...]
-```
+- RiskFrame 正式字段和 Schema 全过；
+- 覆盖实际 ETA，不只 24 h；
+- `environment_speed_factor` 存在且 C 不二次折减；
+- 缺测、低置信、hard mask 均 fail closed；
+- seek 与旧 revision 不能覆盖新结果。
 
-序列化建议使用 GeoJSON `FeatureCollection`：路线为 `LineString`，每个航点的 ETA 和推荐速度可保存在并行属性数组或单独 Point features 中。指标放在顶层 `properties`。
+### C→D
 
-### 5.2 CD 缓存协议
-
-```python
-class RouteResultSource(Protocol):
-    def publish(self, plan: RoutePlan, candidates: Sequence[RoutePlan]) -> None: ...
-    def latest(self, *, scenario_id: str, generation_id: int) -> RoutePlan | None: ...
-```
-
-CD 采用“最新值覆盖”而不是长队列，保留当前、上一版及候选路线即可。D 读取时不得阻塞 C。
-
-## 6. D 的读取规则
-
-D 展示至少包括：
-
-- 当前模拟时间和播放状态；
-- 当前/未来风险图层及其 `valid_time`；
-- 当前路线、上一版路线和候选路线；
-- 船位、航向、速度、已航段、剩余航段和 ETA；
-- 平均/最大风险、计算耗时、重规划次数和原因；
-- 数据/风险/路线更新时间、模型版本和质量提示。
-
-若 CD 暂无新版本，D 继续显示最近有效路线并标注“计算中”或“最后更新时间”。若 `generation_id` 已变化，D 不得继续展示旧代次路线。
-
-## 7. 缺测、过期与错误
-
-- A 缺测：发布 `MissingDataAlert`，不制造全零环境场。
-- B 缺测：按策略保持或降级，并降低 `confidence`；超过最大外推时长后明确标缺测。
-- C 风险窗不完整：请求 B 补算，或采用低置信度保守规划；不得把空风险当安全。
-- D 数据过期：继续显示最近结果，但必须醒目标注过期和更新时间。
-- 任一模块发现 schema/generation/scenario 不匹配：拒绝消费并记录结构化错误。
-
-## 8. B/C/D 最小验收清单
-
-### B
-
-- 输出间隔可配置，默认 1 h；
-- 24 h 风险序列按 `valid_time` 连续排序；
-- `risk_score/risk_level/hard_mask/confidence` 完整；
-- `source_summary/model_version/as_of_time/generation_id` 可追溯；
-- 历史测试证明没有使用未来才发布的 A 帧。
-
-### C
-
-- 按预计到达时间采样风险；
-- 输出最短、低风险、综合推荐和重规划路线；
-- 硬约束违规数为 0；
-- 输出航程、ETA、平均/最大风险、耗时和重规划原因；
-- 跳转时能够取消旧任务并拒绝旧代次结果。
-
-### D
-
-- 固定帧率渲染，不被 B/C 计算阻塞；
-- 没有新路线时能继续显示最近有效结果；
-- 正确显示版本、时间、质量和重规划原因；
-- 跳转/重置后不显示旧代次内容。
-
-## 9. 建议开发顺序
-
-```text
-1. RiskFrame + BC 缓存合同测试
-2. B 的 PASSTHROUGH/HOLD/INTERPOLATE 最小实现
-3. 简单可解释风险融合，生成未来 24 h 序列
-4. RoutePlan + CD 最新值缓存合同测试
-5. C 的时间依赖 A* 与三种基础模式
-6. 重规划触发和 generation_id 取消机制
-7. D 的只读渲染与状态提示
-8. 联调、回放、性能和对比试验
-```
+- RoutePlan 通过 C 的正式 Schema/模型；
+- D 只展示当前 scenario/generation 最新发布；
+- 新结果计算中可展示上一版但必须标注；
+- 旧代次、旧 request/revision 不得重新激活。
