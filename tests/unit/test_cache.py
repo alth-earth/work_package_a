@@ -5,7 +5,11 @@ import pytest
 import xarray as xr
 
 from arctic_route_data.cache import PartitionedABCache
-from arctic_route_data.errors import CacheCapacityError, StaleGenerationError
+from arctic_route_data.errors import (
+    CacheCapacityError,
+    FutureInformationError,
+    StaleGenerationError,
+)
 from arctic_route_data.models import DataCategory, QualityFlag, StandardDataFrame
 
 
@@ -75,6 +79,23 @@ def test_seek_backwards_drops_static_published_after_target(make_record):
 
     assert cache.generation_id == 1
     assert cache.latest("bathymetry", route_id="route-a") is None
+
+
+def test_put_rejects_record_published_after_supplied_simulation_time(make_record):
+    cache = PartitionedABCache(max_memory_mb=1)
+    future = StandardDataFrame(
+        make_record(
+            data_id="future",
+            issue_time=T0 + timedelta(seconds=1),
+        ),
+        Payload(),
+        0,
+    )
+
+    with pytest.raises(FutureInformationError, match="未来帧"):
+        cache.put(future, simulation_time=T0)
+
+    assert not cache.contains("future")
 
 
 def test_reset_generation_without_simulation_time_clears_static(make_record):

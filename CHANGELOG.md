@@ -2,6 +2,73 @@
 
 本文件由项目原 README 改名而来，用于保留工作包 A 首次完整交付的实现说明。当前项目入口、运行方法和 B/C/D 接手指南请阅读 [README.md](README.md)。
 
+## 0.3.1 - 2026-08-11：精确数据集身份、覆盖语义与实源证据加固
+
+### AB 窗口和不可变身份
+
+- `CoverageReport` 拆分为 `has_start_support`、`meets_minimum_horizon`、
+  `covers_requested_window` 和 `provenance_complete`；`complete` 现在严格等于
+  “完整请求窗已覆盖且 provenance 完整”，不再把只达到最低
+  132 h 的窗口写成完整。
+- `PreparedWindow` 显式固结 `as_of_time`，并附带
+  `a.dataset-bundle.v1`。`DatasetBundle` 对 corridor、as-of、请求/最低窗、
+  请求类型和全部实际选中记录的时间、版本、质量、checksum、源快照
+  做内容寻址。
+- 新增 `schemas/dataset-bundle-v1.schema.json`；`replay` 现在输出覆盖报告、
+  选中 data ID 和 bundle，并可用 `--bundle-output` 原子保存 JSON；不完整窗口
+  默认非零退出且不落 bundle；`--allow-incomplete` 仅改变诊断退出码，仍不落盘。
+- `DatasetBundle.from_dict()` 校验字段、record count、规范排序、来源集合和完整
+  digest；`--summary-only` 可避免长窗 records 淹没终端，同时保留完整文件。
+
+### 节奏、来源边界和归档审计
+
+- 原生采集记录显式保存 `nominal_interval_hours`：GFS 3 h、Copernicus
+  wave 3 h、当前 Arctic current/water/ice 产品 1 h。服务优先使用记录声明，
+  只对旧记录使用类型默认值；同窗混入冲突声明时拒绝。
+- 不再默认信任第三方 `DataSource`：记录必须匹配请求的 route/type 且
+  `issue_time <= as_of_time`；加载帧必须匹配精确 record、generation 和
+  payload 变量/上下文/有效内容边界。provenance 也必须由归档型 DataSource 实际
+  验证 ready 文件以及原生 source snapshot 或 raw publication 的磁盘证据，
+  不再接受任意 truthy metadata 或仅有格式正确的自报 checksum。
+- `doctor` 在 ready checksum 之外验证 raw payload/sidecar 的大小、checksum、
+  publication/time/source/version/quality 绑定，以及已声明 source snapshot 的存在性和
+  checksum 和新记录的精确 `source_snapshot_relative_path`；未声明这些字段的
+  历史记录保持可读。
+
+### 物理语义和结构缺测
+
+- 波向必须有可信 CF `standard_name` 或明确的 from/to、true north/east、
+  clockwise/counterclockwise 声明；转换后保留源属性，声明冲突或仅凭
+  变量名时拒绝。
+- 水深只接受明确 `positive=up/down` 或可信 CF `standard_name`；不再按
+  `depth/bathymetry` 变量名猜符号，相互冲突的证据会被拒绝。
+- 原生 Copernicus 在拆帧前从完整请求派生布尔
+  `source_valid_mask`，内容 QC v2 分开“源结构无效域占比”与“有效域内残余
+  缺测”。该 mask 没有导航、陆海分类或法律语义；无原生证据时不自动推断。
+- 普通 ingest 自报 mask 会被拒绝；必须绑定已归档 Copernicus 快照的精确路径、
+  SHA-256、dataset ID 与请求时域，并与快照 mask 的值、坐标和语义一致。
+
+### 运行入口与保留边界
+
+- `make acquire-copernicus` 从已 Git 忽略且权限为 600 的 `.env.copernicus`
+  非回显加载凭据，并支持 `START/HORIZON_HOURS/TYPES/CORRIDOR`；dotenv 由 Python
+  严格解析为数据而不执行 shell，凭据缺失时在启动下载前失败。
+- 原生来源仍未覆盖 `sea_ice_type`、`sea_ice_edge`、`bathymetry`、
+  `long_term_restricted_area`；它们只能通过可审计的 legacy/显式 ingest 进入。
+- 本节不用 fixture/smoke 代替完整长窗真实验收；实际运行的时间、帧数、
+  snapshot/bundle ID、coverage 和 doctor 结果应在完成后单独记录。
+
+### 真实验收结果
+
+- `2026-08-11T15:00Z .. 2026-08-18T15:00Z`：Copernicus 6 类 902 条、
+  GFS 3 类 180 条，均零采集 warning；
+- `as_of=2026-08-11T16:00Z` 的 156 h 联合回放：9/9 类 complete、无 gap，
+  精确选中 1001 条；
+- bundle：`a-bundle-c8b2c039c50f92086e3953e6`，完整 digest
+  `c8b2c039c50f92086e3953e6b56858789bb5cbdb9c14e0151cbc70460f286f1d`；
+- `DatasetBundle.from_dict()` 验证通过；doctor `1419 checked`、零错误/警告；
+  Ruff、uv lock/sync、CLI help 通过，pytest `131 passed`。
+
 ## 0.3.0 - 2026-08-11：真实未来窗与数据合同大修
 
 0.3.0 对 0.2.0 的“已完成”口径做了纠正：13 项 registry 是外部旧脚本的兼容入口，

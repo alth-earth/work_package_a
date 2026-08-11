@@ -12,7 +12,7 @@ import xarray as xr
 
 from arctic_route_data.errors import DataValidationError
 from arctic_route_data.specs import DataTypeSpec, VariableSpec, get_data_type_spec
-from arctic_route_data.timeutils import ensure_utc, isoformat_utc
+from arctic_route_data.timeutils import ensure_utc, isoformat_utc, parse_utc
 
 _LONGITUDE_NAMES = ("longitude", "lon", "nav_lon")
 _LATITUDE_NAMES = ("latitude", "lat", "nav_lat")
@@ -41,6 +41,37 @@ _UNIT_RANGES: dict[str, tuple[float | None, float | None]] = {
     "visibility": (0.0, 1_000_000.0),
     "elevation": (-12_000.0, 10_000.0),
 }
+
+_BATHYMETRY_DOWN_STANDARD_NAMES = {
+    "sea_floor_depth",
+    "sea_floor_depth_below_geoid",
+    "sea_floor_depth_below_geopotential_datum",
+    "sea_floor_depth_below_mean_sea_level",
+    "sea_floor_depth_below_reference_ellipsoid",
+    "sea_floor_depth_below_sea_level",
+    "sea_floor_depth_below_sea_surface",
+}
+_BATHYMETRY_UP_STANDARD_NAMES = {
+    "height_above_geopotential_datum",
+    "height_above_mean_sea_level",
+    "height_above_reference_ellipsoid",
+    "surface_altitude",
+}
+
+
+def _semantic_token(value: object) -> str:
+    return str(value).strip().casefold().replace("-", "_").replace(" ", "_")
+
+
+def _wave_standard_convention(standard_name: str) -> str | None:
+    if not standard_name.startswith("sea_surface_"):
+        return None
+    if standard_name.endswith("_from_direction"):
+        return "from"
+    if standard_name.endswith("_to_direction"):
+        return "to"
+    return None
+
 
 def _find_name(dataset: xr.Dataset, candidates: tuple[str, ...]) -> str | None:
     names = {name.casefold(): name for name in (*dataset.coords, *dataset.variables)}
@@ -303,35 +334,86 @@ def _normalize_wave_direction(
     dataset: xr.Dataset, *, source_name: str
 ) -> xr.Dataset:
     direction = dataset["mean_wave_direction"]
-    standard_name = str(direction.attrs.get("standard_name", "")).casefold()
-    declared = str(direction.attrs.get("direction_convention", "")).casefold()
-    standard_convention = ""
-    if "from_direction" in standard_name:
-        standard_convention = "from"
-    elif "to_direction" in standard_name:
-        standard_convention = "to"
-    if declared and standard_convention and declared not in {
-        standard_convention,
-        "coming_from" if standard_convention == "from" else "going_to",
-    }:
-        raise DataValidationError("mean_wave_direction 的 standard_name 与方向声明冲突")
-    if standard_convention:
-        declared = standard_convention
-    elif not declared and source_name.casefold() in {
-        "vmdr",
-        "mwd",
-        "sea_surface_wave_from_direction",
-    }:
-        declared = "from"
-    if declared in {"to", "towards", "going_to"}:
-        direction = (direction + 180.0) % 360.0
-    elif declared not in {"from", "coming_from"}:
+    source_attrs = dict(direction.attrs)
+    standard_name = _semantic_token(source_attrs.get("standard_name", ""))
+    standard_convention = _wave_standard_convention(standard_name)
+    if standard_name and standard_convention is None:
         raise DataValidationError(
-            "mean_wave_direction 缺少 from/to 方向约定；拒绝猜测可能相差 180° 的波向"
+            f"mean_wave_direction 的 standard_name {standard_name!r} 不是受支持的 CF 波向声明"
         )
+
+    declared_token = _semantic_token(source_attrs.get("direction_convention", ""))
+    conventions = {
+        "from": "from",
+        "coming_from": "from",
+        "to": "to",
+        "towards": "to",
+        "going_to": "to",
+    }
+    if declared_token and declared_token not in conventions:
+        raise DataValidationError(
+            "mean_wave_direction 的 direction_convention 未知；仅支持 from/to 明确声明"
+        )
+    declared_convention = conventions.get(declared_token)
+    if (
+        declared_convention
+        and standard_convention
+        and declared_convention != standard_convention
+    ):
+        raise DataValidationError("mean_wave_direction 的 standard_name 与方向声明冲突")
+    convention = standard_convention or declared_convention
+    if convention is None:
+        raise DataValidationError(
+            f"mean_wave_direction 缺少 from/to 方向证据；不能仅按源变量 {source_name!r} 猜测"
+        )
+
+    reference_token = _semantic_token(source_attrs.get("reference_direction", ""))
+    reference_bearings = {"true_north": 0.0, "true_east": 90.0}
+    if reference_token:
+        if reference_token not in reference_bearings:
+            raise DataValidationError(
+                "mean_wave_direction 的 reference_direction 未知；"
+                "仅支持 true_north/true_east"
+            )
+        reference_bearing = reference_bearings[reference_token]
+    elif standard_convention:
+        reference_bearing = 0.0
     else:
-        direction = direction % 360.0
-    attrs = dict(dataset["mean_wave_direction"].attrs)
+        raise DataValidationError("mean_wave_direction 缺少 reference_direction")
+
+    positive_token = _semantic_token(source_attrs.get("positive_direction", ""))
+    positive_signs = {
+        "clockwise": 1.0,
+        "counterclockwise": -1.0,
+        "counter_clockwise": -1.0,
+        "anticlockwise": -1.0,
+        "anti_clockwise": -1.0,
+    }
+    if positive_token:
+        if positive_token not in positive_signs:
+            raise DataValidationError(
+                "mean_wave_direction 的 positive_direction 未知；"
+                "仅支持 clockwise/counterclockwise"
+            )
+        positive_sign = positive_signs[positive_token]
+    elif standard_convention:
+        positive_sign = 1.0
+    else:
+        raise DataValidationError("mean_wave_direction 缺少 positive_direction")
+
+    direction = (reference_bearing + positive_sign * direction) % 360.0
+    if convention == "to":
+        direction = (direction + 180.0) % 360.0
+
+    attrs = dict(source_attrs)
+    for attribute in (
+        "standard_name",
+        "direction_convention",
+        "reference_direction",
+        "positive_direction",
+    ):
+        if attribute in source_attrs:
+            attrs[f"source_{attribute}"] = str(source_attrs[attribute])
     attrs.update(
         {
             "standard_name": "sea_surface_wave_from_direction",
@@ -352,27 +434,37 @@ def _normalize_bathymetry(
     source_name: str,
 ) -> xr.Dataset:
     elevation = dataset["elevation"]
-    standard_name = str(elevation.attrs.get("standard_name", "")).casefold()
-    positive = str(elevation.attrs.get("positive", "")).casefold()
-    is_depth = "depth_below" in standard_name or positive == "down"
-    is_elevation = (
-        "height_above" in standard_name
-        or "surface_altitude" in standard_name
-        or positive == "up"
-        or source_name.casefold() in {"elevation", "z", "bathymetry"}
-    )
-    if source_name.casefold() == "depth" and not (is_depth or is_elevation):
+    source_attrs = dict(elevation.attrs)
+    standard_name = _semantic_token(source_attrs.get("standard_name", ""))
+    positive = _semantic_token(source_attrs.get("positive", ""))
+    if positive and positive not in {"up", "down"}:
+        raise DataValidationError("bathymetry 的 positive 必须明确为 up 或 down")
+
+    standard_positive: str | None = None
+    if standard_name in _BATHYMETRY_DOWN_STANDARD_NAMES:
+        standard_positive = "down"
+    elif standard_name in _BATHYMETRY_UP_STANDARD_NAMES:
+        standard_positive = "up"
+    if positive and standard_positive and positive != standard_positive:
+        raise DataValidationError("bathymetry 的 positive 与 CF standard_name 垂直正方向冲突")
+
+    source_positive = positive or standard_positive
+    if source_positive is None:
         raise DataValidationError(
-            "bathymetry 源变量名为 depth，但未声明 positive=down/up 或 CF standard_name"
+            f"bathymetry 缺少 positive=up/down 或可信 CF standard_name；"
+            f"不能仅按源变量 {source_name!r} 猜测"
         )
+
     result = dataset.copy()
-    if is_depth:
+    if source_positive == "down":
         converted = -elevation
-        attrs = dict(elevation.attrs)
-        attrs["source_vertical_positive"] = positive or "down_by_standard_name"
+        attrs = dict(source_attrs)
         converted.attrs = attrs
         result["elevation"] = converted
     attrs = dict(result["elevation"].attrs)
+    if standard_name:
+        attrs["source_standard_name"] = str(source_attrs["standard_name"])
+    attrs["source_vertical_positive"] = positive or f"{standard_positive}_by_standard_name"
     attrs.update(
         {
             "standard_name": "height_above_mean_sea_level",
@@ -384,7 +476,77 @@ def _normalize_bathymetry(
     return result
 
 
-def _validate_values(dataset: xr.Dataset, canonical_variables: list[str]) -> dict[str, float]:
+def _validate_source_valid_mask(
+    dataset: xr.Dataset, spatial_dims: set[str]
+) -> tuple[xr.DataArray | None, float | None]:
+    if "source_valid_mask" not in dataset.variables:
+        return None, None
+    if "source_valid_mask" not in dataset.data_vars:
+        raise DataValidationError("source_valid_mask 必须是数据变量，不能是坐标")
+    mask = dataset["source_valid_mask"]
+    if not np.issubdtype(mask.dtype, np.bool_):
+        raise DataValidationError("source_valid_mask 必须使用 boolean dtype")
+    if set(mask.dims) != spatial_dims:
+        raise DataValidationError(
+            "source_valid_mask 必须且只能覆盖经纬度空间维度 "
+            f"{sorted(spatial_dims)}；实际为 {list(mask.dims)}"
+        )
+    if mask.size == 0 or not bool(mask.any().item()):
+        raise DataValidationError("source_valid_mask 没有任何有效空间单元")
+
+    required_attrs = {
+        "semantic_version": "a.source-valid-mask.v1",
+        "semantic_role": "source_valid_domain",
+        "derivation_method": (
+            "any_required_variable_finite_over_complete_requested_dataset"
+        ),
+        "derivation_scope": "native_copernicus_request_before_temporal_split",
+        "navigation_semantics": "none",
+        "classification_semantics": "none",
+    }
+    for key, expected in required_attrs.items():
+        if str(mask.attrs.get(key, "")) != expected:
+            raise DataValidationError(
+                f"source_valid_mask.{key} 必须为 {expected!r}；"
+                "缺少原生 Copernicus 完整请求派生证据时不得推断结构掩膜"
+            )
+    try:
+        required_variables = json.loads(str(mask.attrs["required_source_variables"]))
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise DataValidationError(
+            "source_valid_mask.required_source_variables 必须是 JSON 字符串数组"
+        ) from exc
+    if (
+        not isinstance(required_variables, list)
+        or not required_variables
+        or any(not isinstance(name, str) or not name for name in required_variables)
+    ):
+        raise DataValidationError(
+            "source_valid_mask.required_source_variables 必须是非空 JSON 字符串数组"
+        )
+    try:
+        requested_start = parse_utc(
+            str(mask.attrs["requested_start"]), field="source_valid_mask.requested_start"
+        )
+        requested_end = parse_utc(
+            str(mask.attrs["requested_end"]), field="source_valid_mask.requested_end"
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DataValidationError(
+            "source_valid_mask 必须保留合法 requested_start/requested_end"
+        ) from exc
+    if requested_end < requested_start:
+        raise DataValidationError(
+            "source_valid_mask.requested_end 不能早于 requested_start"
+        )
+    return mask, float(1.0 - np.asarray(mask.values, dtype=bool).mean())
+
+
+def _validate_values(
+    dataset: xr.Dataset,
+    canonical_variables: list[str],
+    source_valid_mask: xr.DataArray | None,
+) -> dict[str, float]:
     missing_fraction: dict[str, float] = {}
     for name in canonical_variables:
         values = np.asarray(dataset[name].values)
@@ -395,7 +557,16 @@ def _validate_values(dataset: xr.Dataset, canonical_variables: list[str]) -> dic
             raise DataValidationError(f"{name} 全部缺测")
         if np.isinf(values).any():
             raise DataValidationError(f"{name} 包含正负无穷值")
-        missing_fraction[name] = float(1.0 - finite.mean())
+        if source_valid_mask is None:
+            valid_domain = np.ones(values.shape, dtype=bool)
+        else:
+            valid_domain = np.asarray(
+                source_valid_mask.broadcast_like(dataset[name]).values,
+                dtype=bool,
+            )
+        if not valid_domain.any():
+            raise DataValidationError(f"{name} 的 source_valid_mask 有效域为空")
+        missing_fraction[name] = float(1.0 - finite[valid_domain].mean())
         bounds = _UNIT_RANGES.get(name)
         if bounds is None:
             continue
@@ -479,8 +650,15 @@ def normalize_dataset(
             source_names[variable.canonical_name] = found
             if found != variable.canonical_name:
                 variable_rename[found] = variable.canonical_name
-    if not found_names and spec.allow_single_variable_fallback and len(working.data_vars) == 1:
-        only = next(iter(working.data_vars))
+    candidate_data_vars = [
+        name for name in working.data_vars if name != "source_valid_mask"
+    ]
+    if (
+        not found_names
+        and spec.allow_single_variable_fallback
+        and len(candidate_data_vars) == 1
+    ):
+        only = candidate_data_vars[0]
         found_names.append(only)
         source_names[spec.variables[0].canonical_name] = only
         variable_rename[only] = spec.variables[0].canonical_name
@@ -492,8 +670,20 @@ def normalize_dataset(
     if variable_rename:
         working = working.rename(variable_rename)
     canonical_variables = [item.canonical_name for item in spec.variables]
-    working = working[canonical_variables]
+    selected_variables = [
+        *canonical_variables,
+        *(["source_valid_mask"] if "source_valid_mask" in working.data_vars else []),
+    ]
+    working = working[selected_variables]
     working = _select_valid_time(working, valid_time)
+    if "source_valid_mask" in working.data_vars and "time" in working.source_valid_mask.dims:
+        if working.source_valid_mask.sizes["time"] != 1:
+            raise DataValidationError(
+                "source_valid_mask 只能是完整请求派生的静态空间域"
+            )
+        static_mask = working.source_valid_mask.isel(time=0, drop=True)
+        working = working.drop_vars("source_valid_mask")
+        working["source_valid_mask"] = static_mask
 
     for variable in spec.variables:
         working[variable.canonical_name] = _canonicalize_unit(
@@ -550,7 +740,12 @@ def normalize_dataset(
             raise DataValidationError(
                 f"{name} 没有覆盖经纬度网格维度 {sorted(spatial_dims)}"
             )
-    missing_fraction = _validate_values(working, canonical_variables)
+    source_valid_mask, structural_mask_fraction = _validate_source_valid_mask(
+        working, spatial_dims
+    )
+    missing_fraction = _validate_values(
+        working, canonical_variables, source_valid_mask
+    )
     grid_id, coordinate_digest = _grid_identity(working)
     source_mapping = _source_grid_mapping(dataset)
 
@@ -581,7 +776,16 @@ def normalize_dataset(
         "longitude_wrap": "-180_180",
         "source_grid_mapping": json.dumps(source_mapping, sort_keys=True),
         "qc_missing_fraction": json.dumps(missing_fraction, sort_keys=True),
-        "normalizer_version": "arctic-route-data/0.3.0",
+        "qc_valid_domain_missing_fraction": json.dumps(
+            missing_fraction, sort_keys=True
+        ),
+        "qc_structural_mask_fraction": json.dumps(structural_mask_fraction),
+        "qc_valid_domain_basis": (
+            "explicit_source_valid_mask"
+            if source_valid_mask is not None
+            else "full_frame_without_explicit_source_valid_mask"
+        ),
+        "normalizer_version": "arctic-route-data/0.3.1",
     }
     return working
 

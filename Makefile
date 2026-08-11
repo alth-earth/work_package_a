@@ -5,7 +5,9 @@ export UV_PYTHON_INSTALL_DIR ?= $(CURDIR)/.uv-python
 # 让 uv 创建的 .venv 也能找到 Mamba 提供的 ecCodes 动态库。
 export ECCODES_DIR ?= $(MAMBA_PREFIX)
 
-.PHONY: env-create env-update sync sync-all test lint check demo acquire-gfs doctor clean
+COPERNICUS_ENV ?= $(CURDIR)/.env.copernicus
+
+.PHONY: env-create env-update sync sync-all test lint check demo acquire-gfs acquire-copernicus doctor clean
 
 env-create:
 	mamba env create --prefix $(MAMBA_PREFIX) -f environment.yml
@@ -35,9 +37,29 @@ demo:
 	$(UV) run arctic-data demo --workspace data/demo-run --reset
 
 acquire-gfs:
-	$(UV) run --extra acquisition arctic-data acquire-forecast \
-		--corridor "$${CORRIDOR:-tromso_to_svalbard}" --sources gfs \
-		--horizon-hours "$${HORIZON_HOURS:-156}"
+	@if [ -n "$$START" ]; then \
+		$(UV) run --extra acquisition arctic-data acquire-forecast \
+			--corridor "$${CORRIDOR:-tromso_to_svalbard}" --sources gfs \
+			--horizon-hours "$${HORIZON_HOURS:-156}" --start "$$START" $${TYPES:+--types $$TYPES}; \
+	else \
+		$(UV) run --extra acquisition arctic-data acquire-forecast \
+			--corridor "$${CORRIDOR:-tromso_to_svalbard}" --sources gfs \
+			--horizon-hours "$${HORIZON_HOURS:-156}" $${TYPES:+--types $$TYPES}; \
+	fi
+
+acquire-copernicus:
+	@test -f "$(COPERNICUS_ENV)" || (echo "缺少 $(COPERNICUS_ENV)" && exit 1)
+	@if [ -n "$$START" ]; then \
+			$(UV) run --extra acquisition arctic-data acquire-forecast \
+				--corridor "$${CORRIDOR:-tromso_to_svalbard}" --sources copernicus \
+				--copernicus-env-file "$(COPERNICUS_ENV)" \
+				--horizon-hours "$${HORIZON_HOURS:-156}" --start "$$START" $${TYPES:+--types $$TYPES}; \
+		else \
+			$(UV) run --extra acquisition arctic-data acquire-forecast \
+				--corridor "$${CORRIDOR:-tromso_to_svalbard}" --sources copernicus \
+				--copernicus-env-file "$(COPERNICUS_ENV)" \
+				--horizon-hours "$${HORIZON_HOURS:-156}" $${TYPES:+--types $$TYPES}; \
+		fi
 
 doctor:
 	$(UV) run arctic-data doctor --data-root data

@@ -131,7 +131,14 @@ def test_full_gfs_window_is_published_one_frame_per_valid_time(tmp_path, monkeyp
 
     def obtain(**kwargs):
         forecast_hour = kwargs["forecast_hour"]
-        path = tmp_path / f"f{forecast_hour:03d}.grib2"
+        path = (
+            tmp_path
+            / "data"
+            / "source_snapshots"
+            / "gfs"
+            / f"f{forecast_hour:03d}.grib2"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(_Response().content)
         return path, evidence, f"https://example.invalid/f{forecast_hour:03d}"
 
@@ -185,6 +192,15 @@ def test_full_gfs_window_is_published_one_frame_per_valid_time(tmp_path, monkeyp
         "temperature",
         "visibility",
     }
+    assert {record.metadata["nominal_interval_hours"] for record in result.records} == {
+        3.0
+    }
+    assert all(
+        record.metadata["source_snapshot_relative_path"].startswith(
+            "source_snapshots/gfs/"
+        )
+        for record in result.records
+    )
 
 
 def test_copernicus_requires_complete_credentials_before_toolbox_call(
@@ -213,14 +229,26 @@ def test_copernicus_explicitly_requests_default_lat_lon_part(tmp_path):
         calls.append(kwargs)
         dataset = xr.Dataset(
             {
-                "VHM0": (("time", "latitude", "longitude"), [[[2.0]]]),
-                "VMDR": (("time", "latitude", "longitude"), [[[10.0]]]),
-                "VTPK": (("time", "latitude", "longitude"), [[[8.0]]]),
+                "VHM0": (
+                    ("time", "latitude", "longitude"),
+                    [[[2.0, np.nan]], [[2.5, np.nan]]],
+                ),
+                "VMDR": (
+                    ("time", "latitude", "longitude"),
+                    [[[10.0, np.nan]], [[20.0, np.nan]]],
+                ),
+                "VTPK": (
+                    ("time", "latitude", "longitude"),
+                    [[[8.0, np.nan]], [[9.0, np.nan]]],
+                ),
             },
             coords={
-                "time": [np.datetime64(T0.replace(tzinfo=None))],
+                "time": [
+                    np.datetime64(T0.replace(tzinfo=None)),
+                    np.datetime64((T0 + timedelta(hours=3)).replace(tzinfo=None)),
+                ],
                 "latitude": [75.0],
-                "longitude": [20.0],
+                "longitude": [20.0, 21.0],
             },
         )
         dataset["VHM0"].attrs["units"] = "m"
@@ -241,6 +269,72 @@ def test_copernicus_explicitly_requests_default_lat_lon_part(tmp_path):
         data_types=("wave",),
     )
 
-    assert len(result.records) == 1
+    assert len(result.records) == 2
     assert calls[0]["dataset_part"] == "default"
-    assert result.records[0].metadata["dataset_part"] == "default"
+    record = result.records[0]
+    assert record.metadata["dataset_part"] == "default"
+    assert record.metadata["nominal_interval_hours"] == 3.0
+    assert record.metadata["source_snapshot_relative_path"].startswith(
+        "source_snapshots/copernicus/"
+    )
+    assert record.quality_flag.value == "suspect"
+    assert record.metadata["content_qc"]["structural_mask_fraction"] == 0.5
+    assert set(record.metadata["content_qc"]["valid_domain_missing_fraction"].values()) == {
+        0.0
+    }
+    mask_metadata = record.metadata["normalization"]["source_valid_mask"]
+    assert mask_metadata["present"] is True
+    assert mask_metadata["semantic_role"] == "source_valid_domain"
+    assert mask_metadata["navigation_semantics"] == "none"
+    for item in result.records:
+        with xr.open_dataset(tmp_path / "data" / item.relative_path) as published:
+            assert published.source_valid_mask.dtype == np.dtype(bool)
+            assert published.source_valid_mask.dims == ("latitude", "longitude")
+            assert published.source_valid_mask.values.tolist() == [[True, False]]
+
+
+def test_copernicus_valid_domain_gaps_still_lower_content_quality(tmp_path):
+    values = np.array(
+        [
+            [[np.nan, 0.2, 0.2, 0.2, 0.2, 0.2]],
+            [[np.nan, np.nan, np.nan, 0.3, 0.3, 0.3]],
+        ]
+    )
+
+    def open_dataset(**kwargs):
+        dataset = xr.Dataset(
+            {"siconc": (("time", "latitude", "longitude"), values)},
+            coords={
+                "time": [
+                    np.datetime64(T0.replace(tzinfo=None)),
+                    np.datetime64((T0 + timedelta(hours=1)).replace(tzinfo=None)),
+                ],
+                "latitude": [75.0],
+                "longitude": [10.0, 11.0, 12.0, 13.0, 14.0, 15.0],
+            },
+        )
+        dataset["siconc"].attrs.update(
+            {"units": "1", "standard_name": "sea_ice_area_fraction"}
+        )
+        return dataset
+
+    acquirer = NativeForecastAcquirer(
+        tmp_path / "data", copernicus_open_dataset=open_dataset
+    )
+    result = acquirer.acquire_copernicus(
+        route_id="route-a",
+        bounds=Bounds(10, 68, 22, 79),
+        start_time=T0,
+        horizon_hours=1,
+        data_types=("sea_ice_concentration",),
+    )
+
+    assert [record.quality_flag.value for record in result.records] == [
+        "suspect",
+        "degraded",
+    ]
+    first_qc = result.records[0].metadata["content_qc"]
+    second_qc = result.records[1].metadata["content_qc"]
+    assert first_qc["structural_mask_fraction"] == pytest.approx(1 / 6)
+    assert first_qc["maximum_valid_domain_missing_fraction"] == 0
+    assert second_qc["maximum_valid_domain_missing_fraction"] == pytest.approx(0.4)

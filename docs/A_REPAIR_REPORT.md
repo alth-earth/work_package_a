@@ -1,9 +1,12 @@
-# 工作包 A 0.3.0 大修与真实运行报告
+# 工作包 A 0.3.0 大修与 0.3.1 证据链加固报告
 
 日期：2026-08-11  
 范围：`/root/my_project/work_package_a`  
 结论：A 已从“旧脚本兼容框架”提升为可真实采集 GFS 完整未来窗、可审计归档、可按
-模拟时钟向 B 提供一致窗口的工作包。Copernicus 尚受账户阻塞，不能写成全数据源已完成。
+模拟时钟向 B 提供一致窗口的工作包。0.3.1 又修正了“最低窗当成完整窗”、
+“单个 source snapshot 当成多源输入身份”、“源插件隐式可信”和“沿岸结构缺测
+等于数据坏掉”等问题。Copernicus 凭据从本地忽略文件严格加载后，已完成一条走廊
+168 h 的 6 类真实采集、9 类联合回放和完整证据验收；具体数字见 4.3。
 
 ## 1. 本轮为什么需要大修
 
@@ -31,8 +34,17 @@ target_horizon_hours = 156
 minimum_complete_horizon_hours = 132
 ```
 
-`CoverageReport.complete` 只有在有起点支撑、达到最低末端且无超限内部缺口时为 true。
-短窗滚动仍可作为未来部署优化，但不能用 24 h 结果冒充完整航程输入。
+0.3.1 把两条验收线分开：
+
+```text
+meets_minimum_horizon   = 起点有支撑 + 到达最低末端 + 最低窗内无超限 gap
+covers_requested_window = 起点有支撑 + 到达请求末端 + 全请求窗无超限 gap
+complete                 = covers_requested_window and provenance_complete
+```
+
+所以只达到 132 h 时可以是 `meets_minimum_horizon=true`，但 156 h 请求下
+`complete=false`。短窗滚动仍可作为未来部署优化，但不能用 24 h 结果
+冒充完整航程输入。
 
 ### 2.2 A `route_id` 映射系统 `corridor_id`
 
@@ -138,12 +150,67 @@ A 校验 GeoJSON 和来源分类，但固定 `automatic_hard_mask_allowed=false`
 - `config-show` 输出有效配置；
 - Mamba 负责 Python/ecCodes/NetCDF/HDF5，uv 负责 Python 锁；
 - Makefile 和 CLI 自动设置项目内 `ECCODES_DIR`；
-- 新增 `acquire-gfs`、`doctor` 目标；
+- 新增 `acquire-gfs`、`doctor` 目标；0.3.1 的 `acquire-copernicus` 从已 Git
+  忽略且权限为 600 的 `.env.copernicus` 非回显加载凭据，并支持
+  `START/HORIZON_HOURS/TYPES/CORRIDOR`；dotenv 被当作数据严格解析，不执行 shell；
 - source snapshots 被 Git 忽略但保留在本地供 B/C 联调。
+
+### 3.8 精确 AB bundle 与 cadence
+
+- `PreparedWindow` 现在显式返回冻结的 `as_of_time`；
+- 新增 `a.dataset-bundle.v1`，对 corridor、as-of、请求/最低时域、请求类型和
+  所有实际选中记录的时间、版本、质量、checksum、source snapshot 做确定性
+  SHA-256；
+- 单个 `source_snapshot_id` 只代表源产品/模型周期及裁剪选择，相同
+  GFS cycle+bbox+types 的不同长度采集可复用该 ID；精确执行和多源 B/C 联调必须
+  保留 `bundle_id + bundle_digest`；
+- `replay` 输出 coverage、选中 IDs 和 bundle，可用 `--bundle-output` 原子保存；
+  不完整窗默认非零退出且不落 bundle，`--summary-only` 只精简 stdout；
+- `DatasetBundle.from_dict()` 会复核 record count、规范排序、来源集合和 digest，
+  防止下游只看 Schema 形状；
+- 原生 GFS 记录声明 3 h，Copernicus wave 声明 3 h，当前 Arctic
+  current/water/ice 原生产品声明 1 h。旧记录才使用类型后备值，冲突声明
+  拒绝隐式选择。
+
+### 3.9 来源插件、raw 和 snapshot 信任边界
+
+- `DataSource.list_available()` 返回的 record 必须精确匹配 route/type，并满足
+  `issue_time <= as_of_time`；
+- `load_frame()` 返回的 record、generation、必需变量、上下文 attrs 和有效内容会
+  二次校验，防止插件注入未来、空 payload、错走廊或旧代次数据；
+- provenance 必须由归档型 DataSource 实际验证 ready 文件及原生 source snapshot
+  或 raw publication 的磁盘 checksum/sidecar 证据；任意 truthy
+  `source_snapshot_id`、格式正确但未落盘的自报 checksum 都不再算完整；
+- 扩展来源只有实现并真正执行可选
+  `verified_provenance_id(record) -> str | None` 能力，才可能把诊断窗口提升为
+  `provenance_complete=true`；内置 `LocalArchiveSource` 已实现；
+- doctor 在 ready checksum 之外核对 raw payload/sidecar 的大小、checksum、
+  publication/time/source/version/quality 绑定；
+- 已声明 `source_file_checksum` 的记录必须能定位到对应 source snapshot 且
+  checksum 一致；新记录还核对精确 `source_snapshot_relative_path`，未声明新绑定
+  字段的历史记录保持可读。
+
+### 3.10 方向/符号证据和结构缺测
+
+- 波向不再默认解读；必须有可信 CF `standard_name` 或明确 from/to、
+  true north/east、clockwise/counterclockwise 声明，冲突或无证据时拒绝；
+- 水深只根据 `positive=up/down` 或可信 CF `standard_name` 决定符号，不按
+  `depth/bathymetry` 变量名猜测；
+- 原生 Copernicus 在单时次拆帧前，从完整请求中“任一必需变量曾有
+  finite 值”派生布尔 `source_valid_mask`；
+- content QC v2 分别报告 `structural_mask_fraction` 和有效域内
+  `valid_domain_missing_fraction`。该 mask 没有 navigation/classification 语义，不是
+  陆海、可通航或法律 `hard_mask`；没有原生证据的旧数据不自动推断。
+- 普通 direct/sidecar ingest 自报 mask 会被拒绝；必须绑定 Copernicus 快照的精确
+  路径、SHA-256、dataset ID 与请求起止时刻，并与快照 mask 的值、坐标和语义一致。
 
 ## 4. 真实数据验收
 
 ### 4.1 已完成：NOAA GFS
+
+本小节的数字是 0.3.0 当时的真实采集/回放记录；源文件仍可审计，但其
+`complete` 布尔值使用旧语义。0.3.1 必须重新 replay，以分项 coverage 和
+`DatasetBundle` 为准。
 
 正式运行首轮：
 
@@ -161,9 +228,10 @@ archive size: about 18 MB
 doctor: 165 checked, no errors/warnings
 ```
 
-以 `2026-08-11T11:17:29Z` 准备 B 窗口：三类各 53 个支撑/窗内帧，
+以 `2026-08-11T11:17:29Z` 准备 B 窗口：三类各 53 个当时查询范围内的支撑/窗内帧，
 `available_start=09:00Z`、`available_end=2026-08-17T21:00Z`，132 h 最低末端为
-`2026-08-16T23:17:29Z`；三类均 complete、无 gap、snapshot ID 一致。
+`2026-08-16T23:17:29Z`；三类在 0.3.0 旧语义下均 complete、无 gap、snapshot ID
+一致。
 
 质量为 `suspect`：原因是 availability evidence 为保守获取时刻，而不是已知内容错误。
 
@@ -176,20 +244,25 @@ bbox: [10.0, 68.5, 22.0, 79.5]
 usable_as_of: 2026-08-11T11:50:20.281323Z
 ```
 
-当前 manifest 共 330 条，保留两版不可变 revision；doctor 检查 330 条，零错误/警告，
+0.3.0 第二次采集结束时 manifest 共 330 条，保留两版不可变 revision；doctor
+检查 330 条，零错误/警告，
 数据目录约 34 MB。以 `2026-08-11T11:50:21Z` 准备窗口会选中新 snapshot，三类
 各 53 个支撑/窗内帧，available end 为 `2026-08-17T21:00Z`，minimum end 为
-`2026-08-16T23:50:21Z`，均 complete 且无 gap。
+`2026-08-16T23:50:21Z`，在 0.3.0 旧语义下均 complete 且无 gap。0.3.1 会另取
+请求末端上支撑帧，且只在 full-window + provenance 同时成立时返回
+`complete=true`。
 
 运行数据保存在 `work_package_a/data/`，由 `.gitignore` 排除但没有删除。
 
 跨包时间边界：C 当前 `demo_tromso_to_svalbard_v1` 仍冻结在
 `2026-07-31 .. 2026-08-03` 的旧 B 制品；本批 GFS 为
 `2026-08-11 .. 2026-08-18`。它们不能直接联调。正确做法是新增场景版本（不能原地
-修改旧 ID），让 `simulation_start/as_of >= 2026-08-11T11:50:20.281323Z`，并把
-`dataset_snapshot_id` 指向 `gfs-20260811T06Z-8840810b511f` 或更上层组合快照。
+修改旧 ID），让 `simulation_start/as_of >= 2026-08-11T11:50:20.281323Z`，并为
+联调运行保留新 `DatasetBundle` 的 `bundle_id + bundle_digest`。若旧共享合同仅有
+`dataset_snapshot_id`，必须在版本化适配中明确它与 bundle 的对应；不得把单个
+`gfs-20260811T06Z-8840810b511f` 冒充之后的多源组合输入。
 
-### 4.2 未完成：Copernicus 正式入库
+### 4.2 0.3.0 历史状态：Copernicus 当时未正式入库
 
 已真实核验：
 
@@ -199,17 +272,76 @@ usable_as_of: 2026-08-11T11:50:20.281323Z
 - 当前目录覆盖超过 156 h，末端数据块存在有限值；
 - 匿名 describe/对象只读可行。
 
-阻塞：`copernicusmarine.open_dataset/subset 2.4.1` 要求免费账户，当前机器没有凭据。
+当时阻塞：`copernicusmarine.open_dataset/subset 2.4.1` 要求免费账户，0.3.0
+验收时本机尚未提供凭据。
 此外，区域子集可能触发数百 MB ARCO 分块传输，仅海流两变量实测估算可约 0.65 GB。
-因此本轮没有伪造或用全零替代 Copernicus 数据。
+因此 0.3.0 当时没有伪造或用全零替代 Copernicus 数据。
+
+### 4.3 已完成：0.3.1 Copernicus + GFS 实源长窗
+
+凭据文件只经过不回显的严格 dotenv 解析，权限为 600，未进入 Git 或报告。真实采集：
+
+```text
+corridor: tromso_to_svalbard
+requested: 2026-08-11T15:00Z .. 2026-08-18T15:00Z (168 h)
+
+Copernicus:
+  ocean_current              169 @ 1 h  cmems-7f520c5e78202c3a
+  sea_ice_concentration      169 @ 1 h  cmems-d2c40fc13f2956fb
+  sea_ice_drift              169 @ 1 h  cmems-58b83b075b1a18bd
+  sea_ice_thickness          169 @ 1 h  cmems-df2a21c3dfbf42e3
+  water_level                169 @ 1 h  cmems-bbfae11c2f955ef5
+  wave                        57 @ 3 h  cmems-f6c31def2e3ba937
+  subtotal: 902 records; warnings: 0
+
+GFS v0.3.1 revision:
+  cycle/source snapshot: gfs-20260811T06Z-8840810b511f
+  f000..f177; wind/temperature/visibility 各 60 @ 3 h
+  subtotal: 180 records; warnings: 0
+```
+
+Copernicus current/water/ice 的源结构无效域占比为 `0.2233868569729408`，
+有效域内最大缺测为 0；wave 的结构占比为 `0.1798807363235675`，全窗单帧最大
+有效域缺测约 `0.035091`。它们没有被误当成导航 mask。全部新帧最终为
+`suspect`，原因是 availability 使用保守获取时刻；这不表示内容已知错误。
+
+以 `as_of=2026-08-11T16:00Z` 请求 156 h、最低 132 h 的 9 类联合回放：
+
+```text
+requested end: 2026-08-18T04:00Z
+minimum end:   2026-08-17T04:00Z
+GFS 3 类 + wave: 每类选中 54 条
+current/water/ice 5 类: 每类选中 157 条
+selected total: 1001
+all 9 types: no gaps; meets_minimum=true; covers_requested=true;
+             provenance_complete=true; complete=true
+cache: 171125694 / 536870912 bytes
+```
+
+联合身份：
+
+```text
+bundle_id:     a-bundle-c8b2c039c50f92086e3953e6
+bundle_digest: c8b2c039c50f92086e3953e6b56858789bb5cbdb9c14e0151cbc70460f286f1d
+bundle records: 1001（全部 normalizer 0.3.1）
+bundle file: data/output/bundles/tromso-native-20260811T1600Z.json
+file SHA-256: 9a41120ff222c818f9a65a48e52f6cb78b5687541294c619d6aa64c2540be0a0
+```
+
+`DatasetBundle.from_dict()` 已重新读取并验证该文件。归档最终 `doctor`：
+`1419 checked, 0 errors, 0 warnings`；运行目录约 443 MB，其中 source snapshots
+约 132 MB、raw 208 MB、ready 97 MB。该数据保留在 `work_package_a/data/` 供 B/C
+联调，但被 Git 忽略。
 
 ## 5. 对 B/C 的直接影响
 
 B 现在可以不等“所有数据源完美”就继续开发：
 
-- 使用 A 的真实 GFS 完整窗；
-- 对缺少的 Copernicus 层明确标缺测/降低 confidence，而不是造安全值；
-- 通过 `PreparedWindow` 得到快照一致的来源集和覆盖报告；
+- 使用 A 已保留的真实 GFS + Copernicus 9 类完整窗；
+- 通过 `PreparedWindow` 得到快照一致的来源集、冻结 `as_of_time`、覆盖报告和
+  精确 `DatasetBundle.v1`；
+- 分别根据 minimum/full/provenance 判定继续、降级或拒绝，不再仅看一个含混
+  的 `complete`；
 - 按 `record.route_id == scenario.corridor_id` 校验；
 - 对 A 原网格做显式目标网格处理；
 - 保存完整 SourceReference；
@@ -224,24 +356,33 @@ C 继续只消费 B 的 RiskFrame，不直接读 A。有效航速责任保持：
 - CLI 主参数 `--scenario` → `--corridor`；旧参数仍可用；
 - `window_for_b` 必须传 `(route_id, data_type)`；
 - 默认 horizon 24 h → 156 h；
+- `CoverageReport.complete` 从“最低 132 h”收紧为“完整请求窗 + provenance”；
+- `PreparedWindow` 新增 `as_of_time` 和 `dataset_bundle`；固定位置构造/序列化
+  `PreparedWindow` 的下游测试需同步更新；
+- 原生帧新增 `nominal_interval_hours/source_snapshot_relative_path`；
 - sidecar 新增三个强制 payload identity 字段及完整 evidence.issue_time；
 - 非权威 issue evidence 不能配 `quality_flag=good`；
 - manifest 由可更新改为不可变；同 ID 不同内容会拒绝。
 
 ## 7. 尚未解决且不能淡化的问题
 
-1. 无 Copernicus 凭据，真实波浪/流/水位/海冰未正式归档。
+1. 项目内原生采集器仍缺 `sea_ice_type`、`sea_ice_edge`、`bathymetry`
+   和 `long_term_restricted_area`；legacy/显式 ingest 可接入，但不能冒充原生完整
+   未来窗。
 2. 没有额外潮流源；当前 Arctic current 是 detided。
 3. A 不做共享目标网格；B 必须完成重采样和覆盖验收。
-4. 13 个旧脚本仍依赖外部 ZIP，不能视为生产级自包含 source plugins。
-5. 部分源没有精确生产者发布时间；保守门禁防泄漏，但不支持精确延迟分析。
-6. `FolderWatchSource` 建议单一 owner；300 s claim 没有 heartbeat，多 watcher 极慢任务
+4. `source_valid_mask` 仅是源数据结构有效域，不提供陆海、通航性或法律
+   `hard_mask`。
+5. 13 个旧脚本仍依赖外部 ZIP，不能视为生产级自包含 source plugins。
+6. 部分源没有精确生产者发布时间；保守门禁防泄漏，但不支持精确延迟分析。
+7. `FolderWatchSource` 建议单一 owner；300 s claim 没有 heartbeat，多 watcher 极慢任务
    仍可能争抢。
-7. 没有常驻调度、对象存储、生产监控、凭据管理和长期失败重试服务。
-8. 限制区法律效力不完整，不能自动成为 hard mask。
-9. 真实运行只完成一条走廊的 GFS；另一走廊需独立采集。
-10. 156 h 是当前规划目标，不是对任意更长航程的永久保证；调用者必须看 coverage。
-11. C 现有演示场景时域与本批真实 GFS 不同；正式联调前要新增共享场景版本和 digest。
+8. 没有常驻调度、对象存储、生产监控、凭据管理和长期失败重试服务。
+9. 限制区法律效力不完整，不能自动成为 hard mask。
+10. 每条走廊和时域均需独立实源验收；一次 smoke 不能证明长期持续可用。
+11. 156 h 是当前规划目标，不是对任意更长航程的永久保证；调用者必须看 coverage。
+12. C 现有演示场景时域与历史真实 GFS 批次不同；正式联调前要新增
+    共享场景版本和 digest，并保留 A `DatasetBundle` 身份。
 
 ## 8. 验收命令
 
@@ -252,7 +393,20 @@ make doctor
 git diff --check
 ```
 
-本轮最终结果：
+0.3.1 最终验收：
+
+```text
+Ruff: passed
+pytest: 131 passed
+uv lock/sync check: passed
+CLI help smoke: passed
+doctor: 1419 checked, 0 errors, 0 warnings
+联合 replay: 9/9 complete, 1001 selected records
+DatasetBundle.from_dict: passed
+git diff --check: passed
+```
+
+下列是 0.3.0 当时的历史结果，仅用于对照：
 
 ```text
 Ruff: passed
@@ -264,20 +418,22 @@ cached real GRIB parse: wind/temperature/visibility, 45 x 49 aligned grid
 git diff --check: passed
 ```
 
-真实采集：
+0.3.1 真实采集命令：
 
 ```bash
-make acquire-gfs
+START=2026-08-11T15:00:00Z HORIZON_HOURS=168 make acquire-copernicus
+START=2026-08-11T15:00:00Z HORIZON_HOURS=168 make acquire-gfs
 ```
 
-Copernicus 只有在提供凭据并预留磁盘后再运行；失败必须保持为空/缺测，不得生成替代
-“真实数据”。
+失败仍必须保持为空/缺测，不得生成替代“真实数据”。
 
 ## 9. 后续优先顺序
 
-1. 提供 Copernicus 免费账户，在一条走廊做 wave + Arctic 七变量合并下载/正式入库；
-2. B 用共享场景网格实现明确重采样、时间处理、confidence 和速度因子；
-3. 增加两走廊 coverage acceptance 与自动调度；
+1. B 用共享场景网格实现明确重采样、时间处理、confidence 和速度因子，并以
+   上述 bundle 建立新的 2026-08-11 场景版本；
+2. 为 `sea_ice_type/edge`、`bathymetry`、`long_term_restricted_area` 增加项目内
+   原生、可审计来源；
+3. 增加第二条走廊 coverage acceptance 与自动调度；
 4. 明确限制区政策数据和潮流来源；
 5. 若需要多 watcher，增加可续期 lease/heartbeat 和 publication 状态查询；
 6. 将共享 scenario/vessel/contracts 迁到统一目录，保持 ID/version/digest 不变。

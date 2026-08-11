@@ -6,6 +6,7 @@ import json
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
+from threading import RLock
 from typing import Protocol
 
 import xarray as xr
@@ -64,6 +65,9 @@ class LocalArchiveSource:
             self.archive_root / "manifest" / "manifest.sqlite3"
         )
         self.verify_checksums = verify_checksums
+        self._verified_provenance: dict[str, str] = {}
+        self._provenance_checksum_cache: dict[Path, str] = {}
+        self._provenance_lock = RLock()
 
     def list_available(self, *args, **kwargs):
         return self.manifest.list_available(*args, **kwargs)
@@ -90,3 +94,23 @@ class LocalArchiveSource:
             with xr.open_dataset(path, engine="h5netcdf") as dataset:
                 payload = dataset.load()
         return StandardDataFrame(record, payload, generation_id)
+
+    def verified_provenance_id(self, record: ManifestRecord) -> str | None:
+        """Verify on-disk archive evidence before granting formal provenance."""
+
+        with self._provenance_lock:
+            cached = self._verified_provenance.get(record.data_id)
+            if cached is not None:
+                return cached
+            # Local import keeps the ordinary source/read path independent from
+            # the heavier archive doctor module until formal coverage is asked.
+            from arctic_route_data.doctor import verified_archived_provenance_id
+
+            verified = verified_archived_provenance_id(
+                self.archive_root,
+                record,
+                checksum_cache=self._provenance_checksum_cache,
+            )
+            if verified is not None:
+                self._verified_provenance[record.data_id] = verified
+            return verified

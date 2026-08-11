@@ -9,8 +9,13 @@
 - 它们不能证明从模拟时刻向未来覆盖 132/156 h；
 - 代码仍在用户 ZIP 中，不是本仓库自包含 source adapter；运行必须显式给
   `--legacy-root`；
-- A 的 native GFS 入口才是本轮真实跑通的完整未来窗来源；native Copernicus
-  入口已实现，但当前机器无账户，尚未正式入库。
+- A 的 native GFS 与 Copernicus 已在 `tromso_to_svalbard` 真实跑通 168 h；
+  Copernicus 6 类 902 条、GFS 3 类 180 条，联合 bundle 1001 条且 9/9 complete。
+  这只证明该走廊/时域，不能据此宣称其他走廊或长期服务已完成。
+
+项目内原生采集当前仍不包含 `sea_ice_type`、`sea_ice_edge`、
+`bathymetry`、`long_term_restricted_area`。这四类通过本文的 legacy/显式 ingest
+接入时，必须继续保留证据和缺口，不能写成 native 完整未来窗。
 
 不要因为 registry 有 13 项就写成“13 类实时预测均已完成”。
 
@@ -51,6 +56,11 @@
 3. 读取 `valid_time/time/time+step` 并拆成单时次帧；
 4. 生成带 checksum/size/publication ID 的 sidecar；
 5. 通过 `FolderWatchSource` 规范化、质检、归档、写 ready 和 manifest。
+
+每个 publisher-backed legacy/显式输入都会把 raw publication checksum 固结为
+provenance identity；正式 `complete=true` 前，归档型 DataSource 还会实际复核
+ready 文件、raw payload 和 sidecar。单独自报一个 `source_snapshot_id` 或 checksum
+字符串不足以通过完整性判断。
 
 动态/缓变数据没有内部时间坐标、也没有显式 `valid_time` 时会拒绝，不能再用
 `issue_time` 伪造 valid time。static 可由适配器明确提供有效时刻。
@@ -97,11 +107,26 @@ northward_sea_ice_velocity
 
 ## 7. 波浪与水深兼容注意
 
-- `VMDR` 为 from direction；A 规范成“从真北来、顺时针”；
+- `VMDR` 的可信 CF 属性表示 from direction；A 规范成“从真北来、顺时针”；
+- 其他波向必须有可信 CF `standard_name` 或明确 from/to、true north/east、
+  clockwise/counterclockwise 证据；只有变量名、声明冲突或未知方向时拒绝；
 - `VTM02` 是均值周期，不等于 `VTPK` 峰值周期，A 不做错误替代；
-- `depth` 若 `positive=down`，A 转成正向上 `elevation`，海底为负。
+- 水深只有在明确 `positive=down` 或可信 CF 向下 `standard_name` 时才取反转成
+  正向上 `elevation`；明确 `positive=up`/可信向上 CF 时保持；二者冲突或仅凭
+  `depth/bathymetry` 变量名时拒绝。
 
-## 8. 旧 B 变量映射只能放适配层
+## 8. `source_valid_mask` 不是 legacy 自动掩膜
+
+0.3.1 的原生 Copernicus 在时间拆帧前，根据完整请求中必需源变量是否曾出现
+finite 值派生布尔 `source_valid_mask`，用于分离结构无效域和有效域内残余缺测。
+它明确不包含导航、陆海分类或法律语义。
+
+legacy/普通 direct 数据即使复制全部 attrs 也不能自报该语义；必须绑定归档
+Copernicus snapshot 的精确相对路径、SHA-256、dataset ID 和请求时域，否则摄取
+拒绝。A 不从单帧 NaN 分布猜测 `source_valid_mask`，B 也不得将它转为
+`hard_mask`。
+
+## 9. 旧 B 变量映射只能放适配层
 
 旧 B 制品可能使用：
 
@@ -119,11 +144,13 @@ sea_surface_height      -> water_level_zos
 这是旧制品专用映射，不是正式 AB/BC 合同。B 应在一个版本化适配器中处理，正式来源
 摘要仍保存 A 的 `data_id/source/version/checksum/issue_time/valid_time`。
 
-## 9. 迁移验收
+## 10. 迁移验收
 
 - 不仅断言函数可 import，还要检查实际 manifest 帧数、valid-time 范围和 132 h 覆盖；
 - 每帧有独立、匹配的 issue evidence；
 - source payload、raw sidecar、ready checksum 均可 doctor；
+- 已声明的 source snapshot 存在且 checksum 可 doctor，raw sidecar 与 manifest 的
+  publication/时间/来源/质量绑定一致；
 - 方向、单位、物理范围和网格身份通过规范化合同测试；
 - 没有把缓存 mtime、文件名或错误 HTTP 响应当成发布时间；
 - 不把部分失败的保护区集合标成完整硬禁航图。

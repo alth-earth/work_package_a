@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -98,8 +100,14 @@ class IngestionPipeline:
 
         try:
             with xr.open_dataset(input_path) as opened:
+                loaded = opened.load()
+                _validate_source_valid_mask_provenance(
+                    loaded,
+                    metadata=extra_metadata,
+                    data_root=self.data_root,
+                )
                 normalized = normalize_dataset(
-                    opened.load(),
+                    loaded,
                     data_type=data_type,
                     valid_time=valid_time,
                     issue_time=issue_time,
@@ -281,6 +289,9 @@ class IngestionPipeline:
             raise DataValidationError("sidecar payload_sha256 与实际文件不一致")
         metadata = dict(sidecar["metadata"])
         evidence = dict(metadata.pop("issue_time_evidence"))
+        metadata.setdefault(
+            "source_snapshot_id", f"raw-{sidecar['payload_sha256'][:24]}"
+        )
         common = {
             "route_id": sidecar["route_id"],
             "issue_time": parse_utc(sidecar["issue_time"], field="issue_time"),
@@ -299,6 +310,127 @@ class IngestionPipeline:
         if sidecar["data_type"] == "long_term_restricted_area":
             return self.ingest_geojson(payload, **common)
         return self.ingest_netcdf(payload, data_type=sidecar["data_type"], **common)
+
+
+def _validate_source_valid_mask_provenance(
+    dataset: xr.Dataset,
+    *,
+    metadata: dict[str, Any] | None,
+    data_root: Path,
+) -> None:
+    """Only accept a structural mask bound to an archived native snapshot."""
+
+    if "source_valid_mask" not in dataset.variables:
+        return
+    evidence = metadata or {}
+    snapshot_id = evidence.get("source_snapshot_id")
+    relative_value = evidence.get("source_snapshot_relative_path")
+    checksum = evidence.get("source_file_checksum")
+    dataset_id = evidence.get("dataset_id")
+    if not isinstance(snapshot_id, str):
+        raise DataValidationError(
+            "source_valid_mask 必须绑定非空 source_snapshot_id"
+        )
+    validate_identifier(snapshot_id, field="source_snapshot_id")
+    if not isinstance(relative_value, str) or not relative_value.strip():
+        raise DataValidationError(
+            "source_valid_mask 必须绑定 source_snapshot_relative_path"
+        )
+    relative_path = Path(relative_value)
+    snapshot_root = (data_root / "source_snapshots" / "copernicus").resolve()
+    source_path = (data_root / relative_path).resolve()
+    if (
+        relative_path.is_absolute()
+        or ".." in relative_path.parts
+        or not source_path.is_relative_to(snapshot_root)
+        or snapshot_id not in source_path.parts
+        or not source_path.is_file()
+    ):
+        raise DataValidationError(
+            "source_valid_mask 的来源快照路径无效或不属于声明的 Copernicus snapshot"
+        )
+    if (
+        not isinstance(checksum, str)
+        or len(checksum) != 64
+        or any(character not in "0123456789abcdef" for character in checksum)
+        or _cached_source_checksum(
+            str(source_path), source_path.stat().st_size, source_path.stat().st_mtime_ns
+        )
+        != checksum
+    ):
+        raise DataValidationError("source_valid_mask 的来源快照 SHA-256 绑定失败")
+    if not isinstance(dataset_id, str) or not dataset_id.startswith("cmems_"):
+        raise DataValidationError(
+            "source_valid_mask 必须绑定明确的 Copernicus dataset_id"
+        )
+    mask = dataset["source_valid_mask"]
+    snapshot_mask, snapshot_dataset_id = _cached_snapshot_source_valid_mask(
+        str(source_path),
+        source_path.stat().st_size,
+        source_path.stat().st_mtime_ns,
+    )
+    if snapshot_dataset_id != dataset_id:
+        raise DataValidationError(
+            "source_valid_mask 绑定的 dataset_id 与精确 Copernicus snapshot 不一致"
+        )
+    comparable_mask = mask
+    if "time" in comparable_mask.dims:
+        if comparable_mask.sizes["time"] != 1:
+            raise DataValidationError(
+                "逐帧 source_valid_mask 的 time 维必须恰好包含一个时次"
+            )
+        comparable_mask = comparable_mask.isel(time=0, drop=True)
+    try:
+        xr.testing.assert_identical(comparable_mask, snapshot_mask)
+    except AssertionError as exc:
+        raise DataValidationError(
+            "ingest payload 的 source_valid_mask 与精确 Copernicus snapshot "
+            "在逐值、坐标或语义上不一致"
+        ) from exc
+    for field in ("requested_start", "requested_end"):
+        if str(mask.attrs.get(field, "")) != str(evidence.get(field, "")):
+            raise DataValidationError(
+                f"source_valid_mask.{field} 与来源快照请求元数据不一致"
+            )
+    try:
+        required_variables = json.loads(str(mask.attrs["required_source_variables"]))
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise DataValidationError(
+            "source_valid_mask 缺少 required_source_variables 证据"
+        ) from exc
+    if (
+        not isinstance(required_variables, list)
+        or not required_variables
+        or any(name not in dataset.data_vars for name in required_variables)
+    ):
+        raise DataValidationError(
+            "source_valid_mask.required_source_variables 与原始 payload 不一致"
+        )
+
+
+@lru_cache(maxsize=128)
+def _cached_source_checksum(path: str, size: int, mtime_ns: int) -> str:
+    del size, mtime_ns
+    return sha256_file(path)
+
+
+@lru_cache(maxsize=32)
+def _cached_snapshot_source_valid_mask(
+    path: str, size: int, mtime_ns: int
+) -> tuple[xr.DataArray, str]:
+    del size, mtime_ns
+    with xr.open_dataset(path) as snapshot:
+        if "source_valid_mask" not in snapshot.data_vars:
+            raise DataValidationError(
+                "声明的 Copernicus snapshot 不包含 source_valid_mask"
+            )
+        source_mask = snapshot["source_valid_mask"].load()
+        snapshot_dataset_id = str(snapshot.attrs.get("copernicus_dataset_id", ""))
+    if "time" in source_mask.dims:
+        raise DataValidationError(
+            "Copernicus snapshot 的 source_valid_mask 必须是完整请求派生的静态空间域"
+        )
+    return source_mask, snapshot_dataset_id
 
 
 def _validate_sidecar(sidecar: Any) -> None:
@@ -359,6 +491,13 @@ def _validate_sidecar(sidecar: Any) -> None:
     metadata = sidecar["metadata"]
     if not isinstance(metadata, dict):
         raise DataValidationError("sidecar.metadata 必须是 object")
+    snapshot_id = metadata.get("source_snapshot_id")
+    if snapshot_id is not None:
+        if not isinstance(snapshot_id, str):
+            raise DataValidationError(
+                "sidecar.metadata.source_snapshot_id 必须是字符串"
+            )
+        validate_identifier(snapshot_id, field="source_snapshot_id")
     evidence = metadata.get("issue_time_evidence")
     _validate_issue_time_evidence(evidence, issue_time=issue_time, quality=quality)
     reference = metadata.get("forecast_reference_time")
@@ -453,14 +592,75 @@ def _content_quality(dataset: xr.Dataset) -> tuple[QualityFlag, dict[str, Any]]:
         fractions = {
             str(key): float(value)
             for key, value in json.loads(
-                str(dataset.attrs.get("qc_missing_fraction", "{}"))
+                str(dataset.attrs.get("qc_valid_domain_missing_fraction", "{}"))
             ).items()
         }
     except (AttributeError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise DataValidationError("规范化结果缺少可解析的 content QC") from exc
+    if not fractions or any(
+        not np.isfinite(value) or not 0.0 <= value <= 1.0
+        for value in fractions.values()
+    ):
+        raise DataValidationError("规范化结果的有效域缺测比例无效")
+    try:
+        structural_mask_fraction = json.loads(
+            str(dataset.attrs.get("qc_structural_mask_fraction", "null"))
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise DataValidationError("规范化结果的结构掩膜比例无法解析") from exc
+
+    source_valid_mask = dataset.data_vars.get("source_valid_mask")
+    if source_valid_mask is None:
+        if structural_mask_fraction is not None:
+            raise DataValidationError(
+                "缺少 source_valid_mask 时不得报告或推断结构掩膜比例"
+            )
+        mask_semantics: dict[str, Any] = {
+            "present": False,
+            "inference": "not_performed_without_explicit_source_evidence",
+        }
+    else:
+        if not np.issubdtype(source_valid_mask.dtype, np.bool_):
+            raise DataValidationError("规范化结果的 source_valid_mask 不是 boolean")
+        measured_fraction = float(
+            1.0 - np.asarray(source_valid_mask.values, dtype=bool).mean()
+        )
+        if (
+            not isinstance(structural_mask_fraction, int | float)
+            or isinstance(structural_mask_fraction, bool)
+            or not np.isfinite(structural_mask_fraction)
+            or not 0.0 <= float(structural_mask_fraction) < 1.0
+            or not math.isclose(
+                float(structural_mask_fraction), measured_fraction, abs_tol=1e-12
+            )
+        ):
+            raise DataValidationError(
+                "qc_structural_mask_fraction 与 source_valid_mask 不一致"
+            )
+        structural_mask_fraction = float(structural_mask_fraction)
+        mask_semantics = {
+            "present": True,
+            **{
+                key: str(source_valid_mask.attrs[key])
+                for key in (
+                    "semantic_version",
+                    "semantic_role",
+                    "derivation_method",
+                    "derivation_scope",
+                    "required_source_variables",
+                    "requested_start",
+                    "requested_end",
+                    "navigation_semantics",
+                    "classification_semantics",
+                )
+                if key in source_valid_mask.attrs
+            },
+        }
     maximum = max(fractions.values(), default=0.0)
     if maximum > 0.8:
-        raise DataValidationError(f"有效空间覆盖不足 20%；最大缺测比例={maximum:.3f}")
+        raise DataValidationError(
+            f"有效域内完整度不足 20%；最大有效域缺测比例={maximum:.3f}"
+        )
     if maximum == 0:
         quality = QualityFlag.GOOD
     elif maximum <= 0.2:
@@ -470,8 +670,13 @@ def _content_quality(dataset: xr.Dataset) -> tuple[QualityFlag, dict[str, Any]]:
     return quality, {
         "status": quality.value,
         "missing_fraction": fractions,
+        "valid_domain_missing_fraction": fractions,
         "maximum_missing_fraction": maximum,
-        "ruleset": "a.content-qc.v1",
+        "maximum_valid_domain_missing_fraction": maximum,
+        "structural_mask_fraction": structural_mask_fraction,
+        "valid_domain_basis": str(dataset.attrs.get("qc_valid_domain_basis", "unknown")),
+        "source_valid_mask": mask_semantics,
+        "ruleset": "a.content-qc.v2",
     }
 
 
@@ -642,6 +847,43 @@ def _normalization_metadata(dataset: xr.Dataset) -> dict[str, Any]:
         missing_fraction = json.loads(str(dataset.attrs.get("qc_missing_fraction", "{}")))
     except json.JSONDecodeError:
         missing_fraction = {}
+    try:
+        valid_domain_missing_fraction = json.loads(
+            str(dataset.attrs.get("qc_valid_domain_missing_fraction", "{}"))
+        )
+    except json.JSONDecodeError:
+        valid_domain_missing_fraction = {}
+    try:
+        structural_mask_fraction = json.loads(
+            str(dataset.attrs.get("qc_structural_mask_fraction", "null"))
+        )
+    except json.JSONDecodeError:
+        structural_mask_fraction = None
+    source_valid_mask = dataset.data_vars.get("source_valid_mask")
+    if source_valid_mask is None:
+        mask_metadata: dict[str, Any] = {
+            "present": False,
+            "inference": "not_performed_without_explicit_source_evidence",
+        }
+    else:
+        mask_metadata = {
+            "present": True,
+            **{
+                key: str(source_valid_mask.attrs[key])
+                for key in (
+                    "semantic_version",
+                    "semantic_role",
+                    "derivation_method",
+                    "derivation_scope",
+                    "required_source_variables",
+                    "requested_start",
+                    "requested_end",
+                    "navigation_semantics",
+                    "classification_semantics",
+                )
+                if key in source_valid_mask.attrs
+            },
+        }
     result: dict[str, Any] = {
         "schema_version": "a.normalization.v1",
         "normalizer_version": str(dataset.attrs.get("normalizer_version", "unknown")),
@@ -652,6 +894,12 @@ def _normalization_metadata(dataset: xr.Dataset) -> dict[str, Any]:
         "coordinate_digest": str(dataset.attrs.get("coordinate_digest", "unknown")),
         "longitude_wrap": str(dataset.attrs.get("longitude_wrap", "unknown")),
         "missing_fraction": missing_fraction,
+        "valid_domain_missing_fraction": valid_domain_missing_fraction,
+        "structural_mask_fraction": structural_mask_fraction,
+        "valid_domain_basis": str(
+            dataset.attrs.get("qc_valid_domain_basis", "unknown")
+        ),
+        "source_valid_mask": mask_metadata,
         "variables": variables,
     }
     try:

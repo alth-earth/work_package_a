@@ -45,11 +45,39 @@ A --StandardDataFrame--> B --RiskFrame v1--> C --RoutePlan v1--> D
 - 只有一个 valid time；
 - `issue_time <= as_of_time`；
 - 有 `route_id/corridor_id`、generation、source/version/checksum/quality；
-- 有 source snapshot、内容 QC、网格 identity 和规范化摘要；
+- 有经归档型 DataSource 实际落盘验证的原生 source snapshot 或 raw
+  publication/checksum 证据、内容 QC、网格 identity 和规范化摘要；任意 truthy
+  metadata 或普通插件自报 checksum 不算 provenance；
 - payload 不可变；
-- 可用 `prepare_window_for_b` 检查 156 h 目标、132 h 最低覆盖和内部缺口。
+- 可用 `prepare_window_for_b` 分别检查 156 h 目标、132 h 最低覆盖、内部缺口
+  和 provenance；`complete` 只在完整请求窗与 provenance 同时完整时为 true；
+- `PreparedWindow.as_of_time` 固结本次查询门禁，`DatasetBundle.v1` 以
+  `bundle_id + bundle_digest` 精确识别该次选中的所有支撑/窗内帧；单个
+  source snapshot 不能冒充多源输入身份。
 
 A 不提供共享目标风险网格，不输出风险或速度因子。
+
+原生 Copernicus `source_valid_mask` 只表示源数据空间有效域，用于区分
+结构缺测和域内残余缺测；它没有导航、陆海分类或法律语义，B/C 不得
+直接用它生成 `hard_mask`。
+
+当前 A 项目内原生采集器仍缺 `sea_ice_type`、`sea_ice_edge`、
+`bathymetry`、`long_term_restricted_area`；这些层经 legacy/显式 ingest 接入前，
+B/C 必须将其作为明确缺测或场景政策未完成，不得生成安全默认值。
+
+当前已验收的 9 类真实联合输入为：
+
+```text
+as_of: 2026-08-11T16:00Z
+window: 2026-08-11T16:00Z .. 2026-08-18T04:00Z
+bundle_id: a-bundle-c8b2c039c50f92086e3953e6
+bundle_digest: c8b2c039c50f92086e3953e6b56858789bb5cbdb9c14e0151cbc70460f286f1d
+records: 1001; 9/9 complete; no gaps
+```
+
+它可以作为 B 新建 2026-08-11 场景版本的环境输入基线，但不能补齐上述四个
+导航/政策层。B 读取持久化 JSON 时应调用 A 的 `DatasetBundle.from_dict()` 验证
+record count 和 digest。
 
 ## 4. B 当前必须向 C 输出什么
 
@@ -137,9 +165,11 @@ replanning。A 只维护采集 corridors，并已把 Tromsø bbox 对齐到
 `[10.0, 68.5, 22.0, 79.5]`。
 
 但空间一致不等于时间一致：C 现有 `demo_tromso_to_svalbard_v1` 时域为
-`2026-07-31 .. 2026-08-03`，A 本轮真实 GFS 时域为
-`2026-08-11 .. 2026-08-18`。联调必须新增版本化 scenario/dataset snapshot 和新的
-config digest，不能在旧 ID 下偷换时间与数据。
+`2026-07-31 .. 2026-08-03`，A 本轮真实 GFS + Copernicus 时域为
+`2026-08-11 .. 2026-08-18`。联调必须新增版本化 scenario/dataset bundle 和新的
+config digest，不能在旧 ID 下偷换时间与数据。联调还应保存当次 A
+`DatasetBundle` 的 ID/digest；旧共享配置若只有单个 `dataset_snapshot_id`，需要在
+版本化适配/合同迁移中明确它与 bundle 的对应，不得随意填一个单源 snapshot。
 
 未来迁移到共享 `demo_scenarios/` 与 `contracts/` 时保持 ID、version、字段和 digest
 语义不变，只改变配置根路径。A/B/C/D 不得各复制一份后独立修改。
@@ -148,10 +178,13 @@ config digest，不能在旧 ID 下偷换时间与数据。
 
 ### A→B
 
-- 每个必需 A 层 `CoverageReport.complete=true`；
+- 每个必需 A 层分别验收 `meets_minimum_horizon`、
+  `covers_requested_window`、`provenance_complete`；完整规划要求
+  `complete=true`，不用只达 132 h 的 minimum 代替 156 h 目标窗；
 - route/corridor、generation、as-of 一致；
 - 网格覆盖共享场景 bbox；
 - source summary 可回到 A checksum/source snapshot；
+- `DatasetBundle.records` 与 B 实际消费帧一致，bundle ID/digest 被保留；
 - 矢量/波向/水深语义正确。
 
 ### B→C

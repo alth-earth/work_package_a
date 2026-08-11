@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 from datetime import UTC, datetime, timedelta
@@ -96,14 +97,32 @@ def build_parser() -> argparse.ArgumentParser:
     listing.add_argument("--end", required=True)
     listing.add_argument("--as-of", required=True, help="模拟时刻；过滤 issue_time > as-of")
 
-    replay = subparsers.add_parser("replay", help="按模拟时钟预取并输出 AB 缓存状态")
+    replay = subparsers.add_parser(
+        "replay", help="按模拟时钟准备一致窗口、覆盖报告与不可变数据 bundle"
+    )
     replay.add_argument("--data-root", type=Path, default=Path("data"))
     replay.add_argument("--route-id", required=True)
     replay.add_argument("--at", required=True)
     replay.add_argument("--types", nargs="+", required=True, choices=sorted(DATA_TYPE_SPECS))
     replay.add_argument("--config", type=Path, default=Path("configs/work_package_a.toml"))
     replay.add_argument("--horizon-hours", type=int)
+    replay.add_argument("--minimum-horizon-hours", type=int)
     replay.add_argument("--max-memory-mb", type=float)
+    replay.add_argument(
+        "--bundle-output",
+        type=Path,
+        help="可选：把 DatasetBundle.v1 原子写入指定 JSON 文件",
+    )
+    replay.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="诊断模式：覆盖不完整时仍返回 0；不完整 bundle 仍禁止持久化",
+    )
+    replay.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="stdout 仅输出 coverage、计数和 bundle 身份；完整 records 仍写入 bundle 文件",
+    )
 
     config_show = subparsers.add_parser("config-show", help="校验并显示实际生效的 TOML 配置")
     config_show.add_argument("--config", type=Path, default=Path("configs/work_package_a.toml"))
@@ -124,6 +143,11 @@ def build_parser() -> argparse.ArgumentParser:
     acquire.add_argument("--types", nargs="+", choices=sorted(DATA_TYPE_SPECS))
     acquire.add_argument("--start", help="UTC ISO-8601；默认当前时刻")
     acquire.add_argument("--horizon-hours", type=int)
+    acquire.add_argument(
+        "--copernicus-env-file",
+        type=Path,
+        help="严格解析的凭据 dotenv；仅允许 Copernicus 用户名/密码键",
+    )
 
     doctor = subparsers.add_parser("doctor", help="校验 manifest、路径和 SHA-256")
     doctor.add_argument("--data-root", type=Path, default=Path("data"))
@@ -230,20 +254,81 @@ def main(argv: list[str] | None = None) -> int:
             cache=cache,
             history_hours=config.cache.history_hours,
         )
-        frames = service.prefetch(
+        target_horizon = (
+            args.horizon_hours
+            if args.horizon_hours is not None
+            else config.cache.target_horizon_hours
+        )
+        minimum_horizon = (
+            args.minimum_horizon_hours
+            if args.minimum_horizon_hours is not None
+            else min(config.cache.minimum_complete_horizon_hours, target_horizon)
+        )
+        prepared = service.prepare_window_for_b(
             route_id=args.route_id,
             data_types=args.types,
-            horizon_hours=args.horizon_hours or config.cache.target_horizon_hours,
+            target_horizon_hours=target_horizon,
+            minimum_complete_horizon_hours=minimum_horizon,
         )
-        print(json.dumps({
-            "published": [frame.record.data_id for frame in frames],
-            "health": service.health(),
-        }, ensure_ascii=False, indent=2))
-        return 0
+        all_required_complete = all(
+            report.complete for report in prepared.coverage.values()
+        )
+        bundle_persisted = args.bundle_output is not None and all_required_complete
+        if bundle_persisted:
+            _atomic_json_output(
+                args.bundle_output,
+                prepared.dataset_bundle.to_dict(),
+            )
+        bundle_payload = prepared.dataset_bundle.to_dict()
+        if args.summary_only:
+            bundle_payload = {
+                key: value
+                for key, value in bundle_payload.items()
+                if key != "records"
+            }
+        print(
+            json.dumps(
+                {
+                    "route_id": prepared.route_id,
+                    "as_of_time": prepared.as_of_time.isoformat(),
+                    "generation_id": prepared.generation_id,
+                    "all_required_complete": all_required_complete,
+                    "coverage": {
+                        data_type: report.to_dict()
+                        for data_type, report in prepared.coverage.items()
+                    },
+                    (
+                        "selected_record_counts"
+                        if args.summary_only
+                        else "selected_data_ids"
+                    ): {
+                        data_type: (
+                            len(frames)
+                            if args.summary_only
+                            else [frame.record.data_id for frame in frames]
+                        )
+                        for data_type, frames in prepared.frames.items()
+                    },
+                    "dataset_bundle": bundle_payload,
+                    "bundle_output": (
+                        str(args.bundle_output.resolve())
+                        if bundle_persisted
+                        else None
+                    ),
+                    "bundle_persisted": bundle_persisted,
+                    "health": service.health(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0 if all_required_complete or args.allow_incomplete else 1
     if args.command == "config-show":
         print(json.dumps(config_to_dict(load_config(args.config)), ensure_ascii=False, indent=2))
         return 0
     if args.command == "acquire-forecast":
+        if args.copernicus_env_file is not None:
+            _load_copernicus_env_file(args.copernicus_env_file)
         config = load_config(args.config)
         try:
             corridor = config.corridors[args.corridor]
@@ -251,7 +336,11 @@ def main(argv: list[str] | None = None) -> int:
             supported = ", ".join(sorted(config.corridors))
             raise ValueError(f"未知 corridor={args.corridor!r}；支持: {supported}") from exc
         start = parse_utc(args.start, field="start") if args.start else datetime.now(UTC)
-        horizon = args.horizon_hours or config.cache.target_horizon_hours
+        horizon = (
+            args.horizon_hours
+            if args.horizon_hours is not None
+            else config.cache.target_horizon_hours
+        )
         bounds = Bounds(
             west=corridor.bbox[0],
             south=corridor.bbox[1],
@@ -363,6 +452,79 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     return 2
+
+
+def _atomic_json_output(path: Path, value: object) -> None:
+    destination = path.resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(
+        destination.suffix + f".{os.getpid()}.part"
+    )
+    temporary.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    temporary.replace(destination)
+
+
+_COPERNICUS_ENV_KEYS = frozenset(
+    {
+        "COPERNICUSMARINE_SERVICE_USERNAME",
+        "COPERNICUSMARINE_SERVICE_PASSWORD",
+        "COPERNICUSMARINE_USERNAME",
+        "COPERNICUSMARINE_PASSWORD",
+    }
+)
+_DOTENV_ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)\Z")
+
+
+def _load_copernicus_env_file(path: Path) -> None:
+    """Load credentials as data; never execute the dotenv as shell code."""
+
+    resolved = path.resolve()
+    try:
+        mode = resolved.stat().st_mode & 0o777
+        text = resolved.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"无法读取 Copernicus 凭据文件 {resolved}: {exc}") from exc
+    if mode != 0o600:
+        raise RuntimeError(
+            f"Copernicus 凭据文件权限必须为 600（当前 {mode:o}）: {resolved}"
+        )
+    loaded: dict[str, str] = {}
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        match = _DOTENV_ASSIGNMENT.fullmatch(line)
+        if match is None:
+            raise RuntimeError(f"凭据文件第 {line_number} 行不是 KEY=VALUE")
+        key, raw_value = match.groups()
+        if key not in _COPERNICUS_ENV_KEYS:
+            raise RuntimeError(f"凭据文件包含不允许的键 {key!r}")
+        if key in loaded:
+            raise RuntimeError(f"凭据文件重复定义 {key!r}")
+        value = raw_value.strip()
+        if value[:1] in {"'", '"'} or value[-1:] in {"'", '"'}:
+            if len(value) < 2 or value[0] != value[-1]:
+                raise RuntimeError(f"凭据文件中的 {key!r} 引号不成对")
+            value = value[1:-1]
+        if not value:
+            raise RuntimeError(f"凭据文件中的 {key!r} 不能为空")
+        loaded[key] = value
+    official_pair = {
+        "COPERNICUSMARINE_SERVICE_USERNAME",
+        "COPERNICUSMARINE_SERVICE_PASSWORD",
+    }
+    compatibility_pair = {
+        "COPERNICUSMARINE_USERNAME",
+        "COPERNICUSMARINE_PASSWORD",
+    }
+    if not (official_pair <= loaded.keys() or compatibility_pair <= loaded.keys()):
+        raise RuntimeError("凭据文件必须包含一组成对的 Copernicus 用户名和密码")
+    os.environ.update(loaded)
 
 
 def _run_demo(workspace: Path, *, reset: bool) -> int:

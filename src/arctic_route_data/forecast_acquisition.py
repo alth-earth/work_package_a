@@ -19,6 +19,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import requests
 import xarray as xr
 
@@ -62,6 +63,7 @@ class CopernicusForecastSpec:
     dataset_id: str
     variables: tuple[str, ...]
     product_id: str
+    nominal_interval_hours: float
     surface_depth: bool = False
 
 
@@ -71,12 +73,14 @@ COPERNICUS_FORECAST_SPECS: dict[str, CopernicusForecastSpec] = {
         "cmems_mod_glo_wav_anfc_0.083deg_PT3H-i",
         ("VHM0", "VMDR", "VTPK"),
         "GLOBAL_ANALYSISFORECAST_WAV_001_027",
+        3.0,
     ),
     "ocean_current": CopernicusForecastSpec(
         "ocean_current",
         "cmems_mod_arc_phy_anfc_6km_detided_PT1H-i",
         ("vxo", "vyo"),
         "ARCTIC_ANALYSISFORECAST_PHY_002_001",
+        1.0,
         True,
     ),
     "water_level": CopernicusForecastSpec(
@@ -84,28 +88,137 @@ COPERNICUS_FORECAST_SPECS: dict[str, CopernicusForecastSpec] = {
         "cmems_mod_arc_phy_anfc_6km_detided_PT1H-i",
         ("zos",),
         "ARCTIC_ANALYSISFORECAST_PHY_002_001",
+        1.0,
     ),
     "sea_ice_concentration": CopernicusForecastSpec(
         "sea_ice_concentration",
         "cmems_mod_arc_phy_anfc_6km_detided_PT1H-i",
         ("siconc",),
         "ARCTIC_ANALYSISFORECAST_PHY_002_001",
+        1.0,
     ),
     "sea_ice_drift": CopernicusForecastSpec(
         "sea_ice_drift",
         "cmems_mod_arc_phy_anfc_6km_detided_PT1H-i",
         ("vxsi", "vysi"),
         "ARCTIC_ANALYSISFORECAST_PHY_002_001",
+        1.0,
     ),
     "sea_ice_thickness": CopernicusForecastSpec(
         "sea_ice_thickness",
         "cmems_mod_arc_phy_anfc_6km_detided_PT1H-i",
         ("sithick",),
         "ARCTIC_ANALYSISFORECAST_PHY_002_001",
+        1.0,
     ),
 }
 
 GFS_DATA_TYPES = frozenset({"wind_field", "temperature", "visibility"})
+
+
+def _with_copernicus_source_valid_mask(
+    dataset: xr.Dataset,
+    *,
+    spec: CopernicusForecastSpec,
+    requested_start: datetime,
+    requested_end: datetime,
+) -> xr.Dataset:
+    """Attach the native source's spatial validity domain before frame splitting.
+
+    This mask is deliberately only a data-availability domain. It carries no
+    navigation, jurisdiction, or surface-classification meaning.
+    """
+
+    coordinate_names = {
+        name.casefold(): name for name in (*dataset.coords, *dataset.variables)
+    }
+    longitude_name = next(
+        (
+            coordinate_names[name]
+            for name in ("longitude", "lon", "nav_lon")
+            if name in coordinate_names
+        ),
+        None,
+    )
+    latitude_name = next(
+        (
+            coordinate_names[name]
+            for name in ("latitude", "lat", "nav_lat")
+            if name in coordinate_names
+        ),
+        None,
+    )
+    if longitude_name is None or latitude_name is None:
+        raise DataValidationError(
+            f"{spec.data_type} 无法从 Copernicus 完整请求结果派生 source_valid_mask："
+            "缺少经纬度坐标"
+        )
+    spatial_dims = set(dataset[longitude_name].dims) | set(dataset[latitude_name].dims)
+    if not spatial_dims:
+        raise DataValidationError(
+            f"{spec.data_type} 无法从 Copernicus 完整请求结果派生 source_valid_mask："
+            "经纬度没有空间维度"
+        )
+
+    source_names = {name.casefold(): name for name in dataset.data_vars}
+    required_arrays: list[tuple[str, xr.DataArray]] = []
+    for requested_name in spec.variables:
+        actual_name = source_names.get(requested_name.casefold())
+        if actual_name is None:
+            raise DataValidationError(
+                f"{spec.data_type} 的 Copernicus 完整请求结果缺少必需变量 "
+                f"{requested_name!r}"
+            )
+        array = dataset[actual_name]
+        if not np.issubdtype(array.dtype, np.number):
+            raise DataValidationError(
+                f"{spec.data_type} 的 Copernicus 必需变量 {actual_name!r} 必须是数值"
+            )
+        if not spatial_dims.issubset(array.dims):
+            raise DataValidationError(
+                f"{spec.data_type} 的 Copernicus 必需变量 {actual_name!r} "
+                f"没有覆盖空间维度 {sorted(spatial_dims)}"
+            )
+        required_arrays.append((actual_name, array))
+
+    source_valid_mask: xr.DataArray | None = None
+    ordered_spatial_dims = tuple(
+        dim for dim in required_arrays[0][1].dims if dim in spatial_dims
+    )
+    for _, array in required_arrays:
+        finite = xr.apply_ufunc(np.isfinite, array)
+        reduction_dims = [dim for dim in finite.dims if dim not in spatial_dims]
+        finite_any = finite.any(dim=reduction_dims) if reduction_dims else finite
+        source_valid_mask = (
+            finite_any
+            if source_valid_mask is None
+            else source_valid_mask | finite_any
+        )
+    assert source_valid_mask is not None
+    source_valid_mask = source_valid_mask.transpose(*ordered_spatial_dims).astype(bool)
+    if not bool(source_valid_mask.any().item()):
+        raise DataValidationError(
+            f"{spec.data_type} 的 Copernicus 请求域没有任何含有限必需变量的空间单元"
+        )
+    source_valid_mask.name = "source_valid_mask"
+    source_valid_mask.attrs = {
+        "semantic_version": "a.source-valid-mask.v1",
+        "semantic_role": "source_valid_domain",
+        "derivation_method": (
+            "any_required_variable_finite_over_complete_requested_dataset"
+        ),
+        "derivation_scope": "native_copernicus_request_before_temporal_split",
+        "required_source_variables": json.dumps(
+            [name for name, _ in required_arrays], sort_keys=True
+        ),
+        "requested_start": isoformat_utc(requested_start),
+        "requested_end": isoformat_utc(requested_end),
+        "navigation_semantics": "none",
+        "classification_semantics": "none",
+    }
+    result = dataset.copy()
+    result["source_valid_mask"] = source_valid_mask
+    return result
 
 
 class NativeForecastAcquirer:
@@ -192,6 +305,10 @@ class NativeForecastAcquirer:
                         "source_uri": source_url,
                         "source_file": path.name,
                         "source_file_checksum": sha256_file(path),
+                        "source_snapshot_relative_path": path.relative_to(
+                            self.data_root
+                        ).as_posix(),
+                        "nominal_interval_hours": float(step_hours),
                         "requested_forecast_hour": forecast_hour,
                     },
                 )
@@ -254,8 +371,18 @@ class NativeForecastAcquirer:
                 kwargs.update({"minimum_depth": 0, "maximum_depth": 0})
             if username and password:
                 kwargs.update({"username": username, "password": password})
-            dataset = open_dataset(**kwargs).load()
+            opened = open_dataset(**kwargs)
+            try:
+                dataset = opened.load()
+            finally:
+                opened.close()
             retrieved_at = datetime.now(UTC)
+            dataset = _with_copernicus_source_valid_mask(
+                dataset,
+                spec=spec,
+                requested_start=start,
+                requested_end=end,
+            )
             valid_times = discover_valid_times(dataset)
             snapshot_id = _snapshot_id(spec.dataset_id, retrieved_at, valid_times)
             snapshot_ids.append(snapshot_id)
@@ -295,6 +422,10 @@ class NativeForecastAcquirer:
                     ),
                     "source_file": source_file.name,
                     "source_file_checksum": sha256_file(source_file),
+                    "source_snapshot_relative_path": source_file.relative_to(
+                        self.data_root
+                    ).as_posix(),
+                    "nominal_interval_hours": spec.nominal_interval_hours,
                     "requested_start": isoformat_utc(start),
                     "requested_end": isoformat_utc(end),
                 },
@@ -314,6 +445,7 @@ class NativeForecastAcquirer:
             records=tuple(records),
             warnings=tuple(warnings),
         )
+
 
     def _select_complete_gfs_cycle(
         self,

@@ -1,5 +1,6 @@
 """Work package A public API."""
 
+from arctic_route_data.bundle import DatasetBundle, DatasetBundleRecord
 from arctic_route_data.cache import PartitionedABCache
 from arctic_route_data.clock import SimulationClock
 from arctic_route_data.config import WorkPackageAConfig, load_config
@@ -20,6 +21,8 @@ __all__ = [
     "AcquisitionPublisher",
     "Bounds",
     "DataCategory",
+    "DatasetBundle",
+    "DatasetBundleRecord",
     "IssueTimeEvidence",
     "LegacyDownloaderRunner",
     "ManifestRecord",
@@ -35,4 +38,4 @@ __all__ = [
     "load_config",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
