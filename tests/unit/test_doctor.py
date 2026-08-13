@@ -100,6 +100,17 @@ def test_doctor_accepts_bound_raw_pair_and_source_snapshot(tmp_path):
     assert LocalArchiveSource(data_root).verified_provenance_id(record) == "snapshot-1"
 
 
+def test_local_archive_rehashes_provenance_after_same_process_tampering(tmp_path):
+    data_root, record, snapshot, _, _ = _published_archive(tmp_path)
+    source = LocalArchiveSource(data_root)
+
+    assert source.verified_provenance_id(record) == "snapshot-1"
+
+    snapshot.write_bytes(b"tampered after first formal verification")
+
+    assert source.verified_provenance_id(record) is None
+
+
 def test_doctor_detects_tampered_raw_payload(tmp_path):
     data_root, _, _, _, raw_payload = _published_archive(tmp_path)
     raw_payload.write_bytes(raw_payload.read_bytes() + b"tampered")

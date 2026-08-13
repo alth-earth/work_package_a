@@ -7,11 +7,16 @@ import xarray as xr
 
 import arctic_route_data.forecast_acquisition as forecast_module
 from arctic_route_data.forecast_acquisition import (
+    AcquisitionMode,
     Bounds,
     NativeForecastAcquirer,
     _gfs_request_signature,
+    _select_hourly_aligned,
     build_gfs_filter_params,
     forecast_hours,
+    ncei_gfs_analysis_url,
+    ncei_inventory_ranges,
+    resolve_acquisition_window,
 )
 from arctic_route_data.issue_time import IssueTimeEvidence, IssueTimeMethod
 
@@ -39,6 +44,178 @@ class _Session:
 
 def test_forecast_hour_policy_includes_non_divisible_horizon():
     assert forecast_hours(10, 3) == (0, 3, 6, 9, 10)
+
+
+def test_explicit_end_and_horizon_resolve_to_the_same_utc_window():
+    by_end = resolve_acquisition_window(
+        start_time=T0,
+        end_time=T0 + timedelta(hours=96),
+        mode="retrospective_best_estimate",
+    )
+    by_horizon = resolve_acquisition_window(start_time=T0, horizon_hours=96)
+
+    assert by_end.horizon_hours == by_horizon.horizon_hours == 96
+    assert by_end.mode is AcquisitionMode.RETROSPECTIVE_BEST_ESTIMATE
+    with pytest.raises(ValueError, match="只能指定一个"):
+        resolve_acquisition_window(
+            start_time=T0, end_time=T0 + timedelta(hours=1), horizon_hours=1
+        )
+
+
+def test_ncei_analysis_url_and_inventory_ranges_select_only_required_messages():
+    inventory = "\n".join(
+        [
+            "1:0:d=2026071500:PRMSL:mean sea level:anl:",
+            "2:100:d=2026071500:VIS:surface:anl:",
+            "3:200:d=2026071500:TMP:2 m above ground:anl:",
+            "4:300:d=2026071500:UGRD:10 m above ground:anl:",
+            "5:400:d=2026071500:VGRD:10 m above ground:anl:",
+            "6:500:d=2026071500:APCP:surface:anl:",
+        ]
+    )
+
+    assert ncei_gfs_analysis_url(T0).endswith(
+        "/202607/20260715/gfs_4_20260715_0000_000.grb2"
+    )
+    assert ncei_inventory_ranges(
+        inventory, data_types=("wind_field", "temperature", "visibility")
+    ) == ((100, 199), (200, 299), (300, 399), (400, 499))
+
+
+def test_ncei_range_downloader_never_fetches_full_global_object(tmp_path):
+    inventory = "\n".join(
+        [
+            "1:0:d=2026071500:VIS:surface:anl:",
+            "2:16:d=2026071500:TMP:2 m above ground:anl:",
+            "3:32:d=2026071500:UGRD:10 m above ground:anl:",
+            "4:48:d=2026071500:VGRD:10 m above ground:anl:",
+            "5:64:d=2026071500:APCP:surface:anl:",
+        ]
+    )
+
+    class Response:
+        def __init__(
+            self,
+            content=b"",
+            *,
+            text="",
+            headers=None,
+            status_code=200,
+        ):
+            self.content = content
+            self.text = text
+            self.headers = headers or {}
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            return None
+
+        def close(self):
+            return None
+
+    class Session:
+        def __init__(self):
+            self.headers = []
+
+        def get(self, url, *, timeout, headers=None, stream=False):
+            if url.endswith(".inv"):
+                return Response(
+                    text=inventory,
+                    content=inventory.encode(),
+                    headers={"Last-Modified": "Sat, 18 Jul 2026 08:49:00 GMT"},
+                )
+            assert stream is True
+            self.headers.append(headers)
+            body = (
+                b"GRIB" + b"x" * 12
+                if len(self.headers) == 1
+                else b"x" * 12 + b"7777"
+                if len(self.headers) == 4
+                else b"x" * 16
+            )
+            byte_range = headers["Range"].removeprefix("bytes=")
+            return Response(
+                body,
+                status_code=206,
+                headers={
+                    "Content-Range": f"bytes {byte_range}/149691871",
+                    "Content-Length": "16",
+                },
+            )
+
+    session = Session()
+    acquirer = NativeForecastAcquirer(tmp_path / "data", http_session=session)
+    path, evidence, _ = acquirer._obtain_ncei_analysis_file(
+        cycle=T0,
+        data_types=("wind_field", "temperature", "visibility"),
+    )
+
+    assert path.is_file()
+    assert len(session.headers) == 4
+    assert all(request and "Range" in request for request in session.headers)
+    assert evidence.method is IssueTimeMethod.HTTP_LAST_MODIFIED
+    assert evidence.issue_time > T0
+    request_metadata = path.with_suffix(path.suffix + ".metadata.json")
+    assert request_metadata.is_file()
+    metadata = forecast_module.json.loads(request_metadata.read_text(encoding="utf-8"))
+    assert metadata["byte_ranges"] == [[0, 15], [16, 31], [32, 47], [48, 63]]
+    assert (path.parent / metadata["inventory_file"]).is_file()
+
+
+def test_ncei_range_downloader_rejects_a_proxy_that_ignores_range(tmp_path):
+    inventory = "\n".join(
+        [
+            "1:0:d=2026071500:VIS:surface:anl:",
+            "2:16:d=2026071500:APCP:surface:anl:",
+        ]
+    )
+
+    class Response:
+        def __init__(self, *, inventory_response=False):
+            self.text = inventory if inventory_response else ""
+            self.content = inventory.encode() if inventory_response else b""
+            self.headers = {}
+            self.status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def close(self):
+            return None
+
+    class Session:
+        def get(self, url, *, timeout, headers=None, stream=False):
+            return Response(inventory_response=url.endswith(".inv"))
+
+    with pytest.raises(forecast_module.DataValidationError, match="206 Partial"):
+        NativeForecastAcquirer(
+            tmp_path / "data",
+            http_session=Session(),
+        )._obtain_ncei_analysis_file(
+            cycle=T0,
+            data_types=("visibility",),
+        )
+
+
+def test_total_current_is_strictly_selected_to_utc_hours_before_load():
+    time = np.arange(
+        np.datetime64("2026-07-15T00:00"),
+        np.datetime64("2026-07-15T02:15"),
+        np.timedelta64(15, "m"),
+    )
+    dataset = xr.Dataset({"vxo": ("time", np.arange(time.size))}, coords={"time": time})
+
+    selected = _select_hourly_aligned(
+        dataset, start=T0, end=T0 + timedelta(hours=2)
+    )
+
+    np.testing.assert_array_equal(
+        selected.time.values,
+        time[[0, 4, 8]].astype("datetime64[ns]"),
+    )
+    missing = dataset.isel(time=[0, 1, 2, 3, 5, 6, 7, 8])
+    with pytest.raises(forecast_module.DataValidationError, match="禁止近邻"):
+        _select_hourly_aligned(missing, start=T0, end=T0 + timedelta(hours=2))
 
 
 def test_gfs_request_identity_includes_bbox_and_variables():
@@ -338,3 +515,129 @@ def test_copernicus_valid_domain_gaps_still_lower_content_quality(tmp_path):
     assert first_qc["structural_mask_fraction"] == pytest.approx(1 / 6)
     assert first_qc["maximum_valid_domain_missing_fraction"] == 0
     assert second_qc["maximum_valid_domain_missing_fraction"] == pytest.approx(0.4)
+
+
+def test_copernicus_source_valid_domain_requires_every_requested_variable(tmp_path):
+    def open_dataset(**kwargs):
+        dataset = xr.Dataset(
+            {
+                "VHM0": (("time", "latitude", "longitude"), [[[2.0, 2.0]]]),
+                "VMDR": (("time", "latitude", "longitude"), [[[10.0, np.nan]]]),
+                "VTPK": (("time", "latitude", "longitude"), [[[8.0, 8.0]]]),
+            },
+            coords={
+                "time": [np.datetime64(T0.replace(tzinfo=None))],
+                "latitude": [75.0],
+                "longitude": [20.0, 21.0],
+            },
+        )
+        dataset["VHM0"].attrs["units"] = "m"
+        dataset["VMDR"].attrs.update(
+            {"units": "degree", "standard_name": "sea_surface_wave_from_direction"}
+        )
+        dataset["VTPK"].attrs["units"] = "s"
+        return dataset
+
+    result = NativeForecastAcquirer(
+        tmp_path / "data", copernicus_open_dataset=open_dataset
+    ).acquire_copernicus(
+        route_id="route-a",
+        bounds=Bounds(10, 68, 22, 79),
+        start_time=T0,
+        horizon_hours=1,
+        data_types=("wave",),
+    )
+
+    with xr.open_dataset(tmp_path / "data" / result.records[0].relative_path) as frame:
+        assert frame.source_valid_mask.values.tolist() == [[True, False]]
+        assert (
+            frame.source_valid_mask.attrs["derivation_method"]
+            == "all_required_variables_finite_over_complete_requested_dataset"
+        )
+        assert frame.source_valid_mask.attrs["semantic_version"] == "a.source-valid-mask.v2"
+
+
+def test_copernicus_reuses_one_nextsim_download_for_type_and_edge(tmp_path):
+    calls = []
+
+    def open_dataset(**kwargs):
+        calls.append(kwargs)
+        dataset = xr.Dataset(
+            {
+                "siconc": (("time", "latitude", "longitude"), [[[0.3, 0.0]]]),
+                "siconc_young": (("time", "latitude", "longitude"), [[[0.1, 0.0]]]),
+                "siconc_my": (("time", "latitude", "longitude"), [[[0.05, 0.0]]]),
+            },
+            coords={
+                "time": [np.datetime64(T0.replace(tzinfo=None))],
+                "latitude": [75.0],
+                "longitude": [20.0, 21.0],
+            },
+        )
+        for name in ("siconc", "siconc_young", "siconc_my"):
+            dataset[name].attrs["units"] = "1"
+        dataset["siconc"].attrs["standard_name"] = "sea_ice_area_fraction"
+        return dataset
+
+    result = NativeForecastAcquirer(
+        tmp_path / "data", copernicus_open_dataset=open_dataset
+    ).acquire_copernicus(
+        route_id="route-a",
+        bounds=Bounds(10, 68, 22, 79),
+        start_time=T0,
+        horizon_hours=1,
+        data_types=("sea_ice_edge", "sea_ice_type"),
+    )
+
+    assert len(calls) == 1
+    assert set(calls[0]["variables"]) == {"siconc", "siconc_young", "siconc_my"}
+    assert {record.data_type for record in result.records} == {
+        "sea_ice_type",
+        "sea_ice_edge",
+    }
+
+
+def test_total_current_is_preferred_and_detided_is_explicit_fallback(tmp_path):
+    calls = []
+
+    def open_dataset(**kwargs):
+        calls.append(kwargs)
+        if kwargs["dataset_id"] == "dataset-topaz6-arc-15min-3km-be":
+            raise RuntimeError("preferred unavailable")
+        dataset = xr.Dataset(
+            {
+                "vxo": (("time", "latitude", "longitude"), [[[0.1]]]),
+                "vyo": (("time", "latitude", "longitude"), [[[0.2]]]),
+            },
+            coords={
+                "time": [np.datetime64(T0.replace(tzinfo=None))],
+                "latitude": [75.0],
+                "longitude": [20.0],
+            },
+        )
+        dataset.vxo.attrs.update(
+            {"units": "m s-1", "standard_name": "eastward_sea_water_velocity"}
+        )
+        dataset.vyo.attrs.update(
+            {"units": "m s-1", "standard_name": "northward_sea_water_velocity"}
+        )
+        return dataset
+
+    result = NativeForecastAcquirer(
+        tmp_path / "data", copernicus_open_dataset=open_dataset
+    ).acquire_copernicus(
+        route_id="route-a",
+        bounds=Bounds(10, 68, 22, 79),
+        start_time=T0,
+        horizon_hours=1,
+        data_types=("ocean_current",),
+    )
+
+    assert [call["dataset_id"] for call in calls] == [
+        "dataset-topaz6-arc-15min-3km-be",
+        "cmems_mod_arc_phy_anfc_6km_detided_PT1H-i",
+    ]
+    assert result.records[0].metadata["current_component"] == "detided"
+    assert result.records[0].metadata["tide_included"] is False
+    assert result.records[0].metadata["source_combination_policy"].endswith("never_sum")
+    assert "两者未相加" in result.warnings[0]

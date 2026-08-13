@@ -65,8 +65,6 @@ class LocalArchiveSource:
             self.archive_root / "manifest" / "manifest.sqlite3"
         )
         self.verify_checksums = verify_checksums
-        self._verified_provenance: dict[str, str] = {}
-        self._provenance_checksum_cache: dict[Path, str] = {}
         self._provenance_lock = RLock()
 
     def list_available(self, *args, **kwargs):
@@ -99,18 +97,15 @@ class LocalArchiveSource:
         """Verify on-disk archive evidence before granting formal provenance."""
 
         with self._provenance_lock:
-            cached = self._verified_provenance.get(record.data_id)
-            if cached is not None:
-                return cached
             # Local import keeps the ordinary source/read path independent from
             # the heavier archive doctor module until formal coverage is asked.
             from arctic_route_data.doctor import verified_archived_provenance_id
 
-            verified = verified_archived_provenance_id(
+            # Formal bundle publication is infrequent compared with ordinary
+            # frame reads. Rehash every bound artifact here so a same-process
+            # archive mutation cannot reuse stale provenance/checksum state.
+            return verified_archived_provenance_id(
                 self.archive_root,
                 record,
-                checksum_cache=self._provenance_checksum_cache,
+                checksum_cache={},
             )
-            if verified is not None:
-                self._verified_provenance[record.data_id] = verified
-            return verified

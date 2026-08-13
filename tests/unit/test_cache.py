@@ -98,6 +98,30 @@ def test_put_rejects_record_published_after_supplied_simulation_time(make_record
     assert not cache.contains("future")
 
 
+def test_knowledge_cutoff_does_not_replace_simulation_time_for_event_expiry(make_record):
+    cache = PartitionedABCache(max_memory_mb=1)
+    event = StandardDataFrame(
+        make_record(
+            data_id="retrospective-event",
+            data_type="long_term_restricted_area",
+            category=DataCategory.EVENT,
+            variables=("restricted_area",),
+            issue_time=T0 + timedelta(days=2),
+            valid_time=T0,
+            metadata={"end_time": (T0 + timedelta(hours=6)).isoformat()},
+        ),
+        Payload(),
+        0,
+    )
+
+    assert cache.put(
+        event,
+        simulation_time=T0,
+        knowledge_as_of=T0 + timedelta(days=3),
+    )
+    assert cache.contains("retrospective-event")
+
+
 def test_reset_generation_without_simulation_time_clears_static(make_record):
     cache = PartitionedABCache(max_memory_mb=1)
     static = StandardDataFrame(

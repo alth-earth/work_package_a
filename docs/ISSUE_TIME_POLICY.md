@@ -8,10 +8,14 @@
 ```text
 源产品生成/同步/取得 ── issue_time 门禁 ── ingest_time
                                │
-                               └── simulation_time >= issue_time 才可见
+                               └── knowledge_as_of >= issue_time 才可见
 
 数据描述的环境时刻 ─────────────────────── valid_time
 ```
+
+因果模式固定 `knowledge_as_of == simulation_time`。只有显式标注
+`retrospective_best_estimate` 的事后研究回放，才允许知识截止时刻晚于模拟时钟；这不会
+把后来下载的数据变成“7 月当时已发布的预测”。
 
 优先使用可证明的生产者发布时间；没有时只能使用“不早于真实可用时刻”的保守上界。
 保守值能防止偷看未来，但不能用来统计精确发布延迟。
@@ -136,3 +140,7 @@ A 同时评估：
 
 必须长期保存当时的 raw payload、sidecar、source snapshot、请求 URL/参数和证据原始
 值。今天的 catalogue 状态只能证明今天看到什么，不能倒推过去何时已经可见。
+
+本项目因此保存两种不同历史场景：严格因果研究只能使用当时可证明的 issue-time
+证据；事后最佳估计可以使用后来取得的历史分析/再分析，但必须保存实际 retrieval gate，
+并在 CLI、bundle、Scenario 和报告中持续标为 `retrospective_best_estimate`。

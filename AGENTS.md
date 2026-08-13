@@ -10,7 +10,9 @@
 
 - A 负责采集、预处理、索引、回放和 AB 发布；风险、规划、渲染分别属于 B、C、D。
 - `issue_time`、`valid_time`、`ingest_time` 都是 UTC，语义不可混用。
-- 查询和回放必须满足 `issue_time <= simulation_time`；不得从文件名或本地 mtime 猜发布时间。
+- 查询和回放必须满足 `issue_time <= knowledge_as_of`；因果模式中
+  `knowledge_as_of == simulation_time`，只有明确标为 `retrospective_best_estimate`
+  时才可使用更晚知识截止时间。不得从文件名或本地 mtime 猜发布时间。
 - 进入 AB 的 NetCDF 每帧只能有一个 `valid_time`。
 - payload/sidecar 使用 `.part → payload → sidecar` 的原子发布顺序。
 - sidecar 必须用 `payload_sha256`、`payload_size_bytes` 和唯一
@@ -20,12 +22,15 @@
   `corridor_id`，不能冒充 `scenario_id`。
 - 同一逻辑时次的新 revision 按显式质量/issue/ingest 规则选择；不得覆盖已发布历史。
 - 模拟跳转后必须通过 `generation_id` 拒绝旧任务迟到结果。
-- 完整窗默认目标 156 h、最低 132 h；旧快照脚本不能证明覆盖。
+- 完整窗由共享 Scenario/走廊时域显式决定，不固定为 156 h 或 9 天；当前硬上限
+  216 h，旧快照脚本和短 smoke 不能证明完整覆盖。
 - 缺测要显式报告，禁止用全零数组伪装有效数据。
 - 风、流、冰漂规范为真东/真北分量；波向规范为 from true north
   clockwise；水深规范为正向上 elevation。缺单位或方向证据时拒绝，不按变量名猜。
-- A 保存源网格及 `grid_id`，B 负责共享目标网格；A 的限制区不得按图层名称自动转成
-  `hard_mask`。
+- A 保存源网格及 `grid_id`，B 负责共享目标网格；`source_valid_mask` 不得替代
+  `land_sea_mask`；A 的限制区不得按图层名称自动转成 `hard_mask`。
+- 含潮总流和 detided 流是互斥来源，禁止相加；水深当前是研究静态层，不自动生成
+  净水深硬约束。
 - 不提交账号、密码、密钥、下载数据、缓存、虚拟环境或运行输出。
 - 运行数据可留在 `.gitignore` 覆盖的 `data/` 供 B/C 联调，但不能提交。
 - `FolderWatchSource` 当前按单一摄取 owner 部署；未实现 heartbeat 前不要启动无协调的

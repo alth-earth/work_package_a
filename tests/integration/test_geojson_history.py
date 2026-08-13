@@ -70,5 +70,9 @@ def test_geojson_revisions_are_content_addressed_and_never_overwrite_history(tmp
     assert first.relative_path != second.relative_path
     assert sha256_file(first.absolute_path(tmp_path / "data")) == first_checksum
     assert first.metadata["automatic_hard_mask_allowed"] is False
-    assert first.metadata["constraint_summary"]["unknown_navigation_effect"] == 1
+    summary = first.metadata["constraint_summary"]
+    assert summary["unknown_navigation_effect"] == 0
+    assert summary["defaulted_to_information"] == 1
+    assert summary["navigation_effect_counts"]["information"] == 1
+    assert summary["automatic_hard_mask_allowed"] is False
     assert inspect_archive(tmp_path / "data").ok

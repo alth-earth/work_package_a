@@ -33,6 +33,7 @@ def _bundle(make_record, records, *, verified=True):
         requested_data_types=("wave", "wind_field"),
         records=tuple(records),
         verified_provenance_ids=verified_ids,
+        expected_interval_hours={"wave": 3.0, "wind_field": 3.0},
     )
 
 
@@ -61,6 +62,8 @@ def test_dataset_bundle_digest_is_order_independent_and_covers_exact_records(
     assert forward.bundle_digest == reverse.bundle_digest
     assert forward.source_snapshot_ids == ("cmems-a", "gfs-cycle-a")
     assert forward.to_dict()["record_count"] == 2
+    assert forward.schema_version == "a.dataset-bundle.v2"
+    assert len(forward.coverage) == 2
 
     changed = _bundle(
         make_record,
@@ -155,3 +158,127 @@ def test_unverified_metadata_cannot_claim_bundle_provenance(make_record):
 
     assert bundle.records[0].source_snapshot_id is None
     assert bundle.source_snapshot_ids == ()
+
+
+def test_v2_coverage_is_recomputed_and_cannot_fake_complete(make_record):
+    records = [
+        make_record(
+            data_id=f"wave-{offset}",
+            data_type="wave",
+            issue_time=T0 - timedelta(hours=1),
+            valid_time=T0 + timedelta(hours=offset),
+            metadata=_provenance("cmems-a"),
+        )
+        for offset in (0, 3, 6, 156)
+    ]
+    payload = _bundle(make_record, records).to_dict()
+    wave = next(item for item in payload["coverage"] if item["data_type"] == "wave")
+    assert wave["complete"] is False
+    assert wave["missing_intervals"]
+
+    wave["complete"] = True
+    with pytest.raises(MetadataValidationError, match="重算结果"):
+        DatasetBundle.from_dict(payload)
+
+
+def test_v2_rejects_ninety_minute_spacing_for_hourly_cadence(make_record):
+    records = [
+        make_record(
+            data_id=f"ice-{index:03d}",
+            data_type="sea_ice_type",
+            issue_time=T0 - timedelta(hours=1),
+            valid_time=T0 + timedelta(minutes=90 * index),
+            metadata=_provenance("cmems-hourly"),
+        )
+        for index in range(105)
+    ]
+    verified = {
+        record.data_id: record_provenance_id(record)
+        for record in records
+        if record_provenance_id(record) is not None
+    }
+    bundle = DatasetBundle.create(
+        corridor_id="route-a",
+        as_of_time=T0,
+        requested_start=T0,
+        requested_end=T0 + timedelta(hours=156),
+        minimum_required_end=T0 + timedelta(hours=132),
+        requested_data_types=("sea_ice_type",),
+        records=tuple(records),
+        verified_provenance_ids=verified,
+        expected_interval_hours={"sea_ice_type": 1.0},
+    )
+
+    assert bundle.coverage[0].missing_intervals
+    assert bundle.coverage[0].complete is False
+
+
+def test_complete_v2_is_independently_accepted_by_shared_contracts(make_record):
+    records = [
+        make_record(
+            data_id=f"{data_type}-{offset:03d}",
+            data_type=data_type,
+            issue_time=T0 - timedelta(hours=1),
+            valid_time=T0 + timedelta(hours=offset),
+            metadata=_provenance(f"snapshot-{data_type}"),
+        )
+        for data_type in ("wave", "wind_field")
+        for offset in range(0, 157, 3)
+    ]
+
+    bundle = _bundle(make_record, records)
+
+    from arctic_route_contracts import verify_dataset_bundle
+
+    identity = verify_dataset_bundle(bundle.to_dict())
+    assert identity.schema_version == "a.dataset-bundle.v2"
+    assert identity.coverage_complete is True
+    assert identity.formal_run_eligible is True
+
+
+def test_empty_v2_cannot_claim_formal_coverage(make_record):
+    bundle = _bundle(make_record, [])
+
+    assert bundle.coverage
+    assert all(not proof.complete for proof in bundle.coverage)
+
+    from arctic_route_contracts import verify_dataset_bundle
+
+    identity = verify_dataset_bundle(bundle.to_dict())
+    assert identity.record_count == 0
+    assert identity.coverage_complete is False
+    assert identity.formal_run_eligible is False
+
+
+def test_v1_bundle_remains_readable_as_legacy(make_record):
+    record = make_record(
+        data_id="frame-a",
+        data_type="wave",
+        issue_time=T0 - timedelta(hours=1),
+        valid_time=T0,
+        metadata=_provenance("cmems-a"),
+    )
+    bundle = _bundle(make_record, [record])
+    payload = bundle.to_dict()
+    payload.pop("coverage")
+    payload["schema_version"] = "a.dataset-bundle.v1"
+    from arctic_route_data.bundle import _bundle_digest
+
+    digest = _bundle_digest(
+        schema_version="a.dataset-bundle.v1",
+        corridor_id=bundle.corridor_id,
+        as_of_time=bundle.as_of_time,
+        requested_start=bundle.requested_start,
+        requested_end=bundle.requested_end,
+        minimum_required_end=bundle.minimum_required_end,
+        requested_data_types=bundle.requested_data_types,
+        source_snapshot_ids=bundle.source_snapshot_ids,
+        records=bundle.records,
+    )
+    payload["bundle_digest"] = digest
+    payload["bundle_id"] = f"a-bundle-{digest[:24]}"
+
+    restored = DatasetBundle.from_dict(payload)
+
+    assert restored.schema_version == "a.dataset-bundle.v1"
+    assert restored.coverage == ()

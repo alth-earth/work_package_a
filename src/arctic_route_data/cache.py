@@ -70,24 +70,35 @@ class PartitionedABCache:
             entry = self._entries.get(data_id)
             return entry is not None and entry.active
 
-    def put(self, frame: StandardDataFrame, *, simulation_time: datetime | None = None) -> bool:
+    def put(
+        self,
+        frame: StandardDataFrame,
+        *,
+        simulation_time: datetime | None = None,
+        knowledge_as_of: datetime | None = None,
+    ) -> bool:
         """Activate a frame and return whether it became the selected revision."""
 
-        as_of = (
+        simulation_as_of = (
             ensure_utc(simulation_time, field="simulation_time")
             if simulation_time is not None
             else None
+        )
+        availability_as_of = (
+            ensure_utc(knowledge_as_of, field="knowledge_as_of")
+            if knowledge_as_of is not None
+            else simulation_as_of
         )
         with self._lock:
             if frame.generation_id != self._generation_id:
                 raise StaleGenerationError(
                     f"拒绝代次 {frame.generation_id} 的迟到帧；当前代次为 {self._generation_id}"
                 )
-            if as_of is not None and frame.record.issue_time > as_of:
+            if availability_as_of is not None and frame.record.issue_time > availability_as_of:
                 raise FutureInformationError(
                     f"拒绝未来帧 {frame.record.data_id}：issue_time="
-                    f"{frame.record.issue_time.isoformat()} 晚于模拟时刻 "
-                    f"{as_of.isoformat()}"
+                    f"{frame.record.issue_time.isoformat()} 晚于知识截止时刻 "
+                    f"{availability_as_of.isoformat()}"
                 )
             stored_frame = frame.consumer_copy()
             existing = self._entries.get(frame.record.data_id)
@@ -130,7 +141,7 @@ class PartitionedABCache:
                 frame.record.route_id,
                 frame.record.data_type,
             )
-            self._evict_expired_events(as_of)
+            self._evict_expired_events(simulation_as_of)
             return True
 
     def _make_room(self, additional_bytes: int, *, protected: set[str]) -> None:

@@ -33,8 +33,21 @@ wheels = [
 ]
 
 [[package]]
+name = "arctic-route-contracts"
+version = "0.2.0"
+source = { editable = "../arctic_route_contracts" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.3,<10" },
+    { name = "ruff", specifier = ">=0.11,<1" },
+]
+
+[[package]]
 name = "arctic-route-data"
-version = "0.3.1"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "h5netcdf" },
@@ -50,6 +63,9 @@ acquisition = [
     { name = "cfgrib" },
     { name = "copernicusmarine" },
 ]
+contracts = [
+    { name = "arctic-route-contracts" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -60,6 +76,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "arctic-route-contracts", marker = "extra == 'contracts'", editable = "../arctic_route_contracts" },
     { name = "cfgrib", marker = "extra == 'acquisition'", specifier = ">=0.9.15,<0.10" },
     { name = "copernicusmarine", marker = "extra == 'acquisition'", specifier = ">=2.2,<3" },
     { name = "h5netcdf", specifier = ">=1.6,<2" },
@@ -69,7 +86,7 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.15,<2" },
     { name = "xarray", specifier = ">=2025.1,<2027" },
 ]
-provides-extras = ["acquisition"]
+provides-extras = ["acquisition", "contracts"]
 
 [package.metadata.requires-dev]
 dev = [

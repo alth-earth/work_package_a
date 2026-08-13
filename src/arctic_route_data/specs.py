@@ -40,14 +40,14 @@ DATA_TYPE_SPECS: dict[str, DataTypeSpec] = {
         "sea_ice_type",
         DataCategory.SLOW,
         (VariableSpec("ice_type", ("ice_type", "ice_class", "ice_type_code"), "1"),),
-        "MET Norway THREDDS / OSI SAF",
+        "Copernicus Marine neXtSIM / OSI SAF legacy",
         True,
     ),
     "sea_ice_edge": DataTypeSpec(
         "sea_ice_edge",
         DataCategory.SLOW,
         (VariableSpec("ice_edge", ("ice_edge", "ice_edge_code", "ice_edge_type"), "1"),),
-        "MET Norway THREDDS / OSI SAF",
+        "Derived from Copernicus Marine sea-ice concentration / OSI SAF legacy",
         True,
     ),
     "sea_ice_drift": DataTypeSpec(
@@ -152,6 +152,12 @@ DATA_TYPE_SPECS: dict[str, DataTypeSpec] = {
         "bathymetry",
         DataCategory.STATIC,
         (VariableSpec("elevation", ("elevation", "z", "depth", "bathymetry"), "m"),),
+        "GEBCO",
+    ),
+    "land_sea_mask": DataTypeSpec(
+        "land_sea_mask",
+        DataCategory.STATIC,
+        (VariableSpec("land_sea_mask", ("land_sea_mask", "sea_mask"), "1"),),
         "GEBCO",
     ),
     "long_term_restricted_area": DataTypeSpec(

@@ -1,6 +1,6 @@
 [project]
 name = "arctic-route-data"
-version = "0.3.1"
+version = "0.4.0"
 description = "北极航线工作包 A：采集、预处理、权威时间、逐时次发布、manifest 与 AB 缓存"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -18,6 +18,12 @@ acquisition = [
     "cfgrib>=0.9.15,<0.10",
     "copernicusmarine>=2.2,<3",
 ]
+contracts = [
+    "arctic-route-contracts",
+]
+
+[tool.uv.sources]
+arctic-route-contracts = { path = "../arctic_route_contracts", editable = true }
 
 [project.scripts]
 arctic-data = "arctic_route_data.cli:main"

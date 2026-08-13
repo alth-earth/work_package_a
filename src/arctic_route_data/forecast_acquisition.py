@@ -16,6 +16,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ import numpy as np
 import requests
 import xarray as xr
 
+from arctic_route_data.derivations import derive_sea_ice_edge, derive_sea_ice_type
 from arctic_route_data.errors import DataValidationError
 from arctic_route_data.ingestion import sha256_file
 from arctic_route_data.issue_time import IssueTimeEvidence, IssueTimeMethod
@@ -32,6 +34,10 @@ from arctic_route_data.temporal_split import discover_valid_times
 from arctic_route_data.timeutils import ensure_utc, isoformat_utc, parse_utc
 
 NOMADS_GFS_FILTER_URL = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
+NCEI_GFS_ANALYSIS_ROOT = (
+    "https://www.ncei.noaa.gov/oa/prod-model/global-forecast-system/access/"
+    "grid-004-0.5-degree/analysis"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +63,54 @@ class ForecastAcquisitionResult:
     warnings: tuple[str, ...] = ()
 
 
+class AcquisitionMode(StrEnum):
+    """User-visible time semantics; modes must never be silently mixed."""
+
+    FROZEN_FORECAST = "frozen_forecast"
+    RETROSPECTIVE_BEST_ESTIMATE = "retrospective_best_estimate"
+
+
+@dataclass(frozen=True, slots=True)
+class AcquisitionWindow:
+    start: datetime
+    end: datetime
+    horizon_hours: int
+    mode: AcquisitionMode
+
+
+def resolve_acquisition_window(
+    *,
+    start_time: datetime,
+    end_time: datetime | None = None,
+    horizon_hours: int | None = None,
+    mode: AcquisitionMode | str = AcquisitionMode.FROZEN_FORECAST,
+) -> AcquisitionWindow:
+    """Resolve one explicit UTC window without changing its historical meaning."""
+
+    start = ensure_utc(start_time, field="start_time")
+    selected_mode = AcquisitionMode(mode)
+    if end_time is not None and horizon_hours is not None:
+        raise ValueError("end_time 与 horizon_hours 只能指定一个")
+    if end_time is None and horizon_hours is None:
+        raise ValueError("必须指定 end_time 或 horizon_hours")
+    if horizon_hours is not None:
+        if not isinstance(horizon_hours, int) or isinstance(horizon_hours, bool):
+            raise ValueError("horizon_hours 必须是正整数")
+        if horizon_hours <= 0:
+            raise ValueError("horizon_hours 必须是正整数")
+        end = start + timedelta(hours=horizon_hours)
+    else:
+        end = ensure_utc(end_time, field="end_time")  # type: ignore[arg-type]
+        seconds = (end - start).total_seconds()
+        if seconds <= 0:
+            raise ValueError("end_time 必须晚于 start_time")
+        hours, remainder = divmod(seconds, 3600)
+        if remainder:
+            raise ValueError("当前原生采集窗口要求 start_time 到 end_time 为整小时")
+        horizon_hours = int(hours)
+    return AcquisitionWindow(start, end, horizon_hours, selected_mode)
+
+
 @dataclass(frozen=True, slots=True)
 class CopernicusForecastSpec:
     data_type: str
@@ -65,6 +119,9 @@ class CopernicusForecastSpec:
     product_id: str
     nominal_interval_hours: float
     surface_depth: bool = False
+    current_component: str | None = None
+    tide_included: bool | None = None
+    derivation: str | None = None
 
 
 COPERNICUS_FORECAST_SPECS: dict[str, CopernicusForecastSpec] = {
@@ -77,11 +134,12 @@ COPERNICUS_FORECAST_SPECS: dict[str, CopernicusForecastSpec] = {
     ),
     "ocean_current": CopernicusForecastSpec(
         "ocean_current",
-        "cmems_mod_arc_phy_anfc_6km_detided_PT1H-i",
+        "dataset-topaz6-arc-15min-3km-be",
         ("vxo", "vyo"),
-        "ARCTIC_ANALYSISFORECAST_PHY_002_001",
-        1.0,
-        True,
+        "ARCTIC_ANALYSISFORECAST_PHY_TIDE_002_015",
+        0.25,
+        current_component="total",
+        tide_included=True,
     ),
     "water_level": CopernicusForecastSpec(
         "water_level",
@@ -111,7 +169,34 @@ COPERNICUS_FORECAST_SPECS: dict[str, CopernicusForecastSpec] = {
         "ARCTIC_ANALYSISFORECAST_PHY_002_001",
         1.0,
     ),
+    "sea_ice_type": CopernicusForecastSpec(
+        "sea_ice_type",
+        "cmems_mod_arc_phy_anfc_nextsim_hm",
+        ("siconc", "siconc_young", "siconc_my"),
+        "ARCTIC_ANALYSISFORECAST_PHY_ICE_002_011",
+        1.0,
+        derivation="dominant_class_from_nextsim_concentration_fractions_v1",
+    ),
+    "sea_ice_edge": CopernicusForecastSpec(
+        "sea_ice_edge",
+        "cmems_mod_arc_phy_anfc_nextsim_hm",
+        ("siconc",),
+        "ARCTIC_ANALYSISFORECAST_PHY_ICE_002_011",
+        1.0,
+        derivation="four_neighbour_ice_side_edge_at_siconc_0.15_v1",
+    ),
 }
+
+COPERNICUS_DETIDED_CURRENT_FALLBACK = CopernicusForecastSpec(
+    "ocean_current",
+    "cmems_mod_arc_phy_anfc_6km_detided_PT1H-i",
+    ("vxo", "vyo"),
+    "ARCTIC_ANALYSISFORECAST_PHY_002_001",
+    1.0,
+    True,
+    current_component="detided",
+    tide_included=False,
+)
 
 GFS_DATA_TYPES = frozenset({"wind_field", "temperature", "visibility"})
 
@@ -192,7 +277,7 @@ def _with_copernicus_source_valid_mask(
         source_valid_mask = (
             finite_any
             if source_valid_mask is None
-            else source_valid_mask | finite_any
+            else source_valid_mask & finite_any
         )
     assert source_valid_mask is not None
     source_valid_mask = source_valid_mask.transpose(*ordered_spatial_dims).astype(bool)
@@ -202,10 +287,10 @@ def _with_copernicus_source_valid_mask(
         )
     source_valid_mask.name = "source_valid_mask"
     source_valid_mask.attrs = {
-        "semantic_version": "a.source-valid-mask.v1",
+        "semantic_version": "a.source-valid-mask.v2",
         "semantic_role": "source_valid_domain",
         "derivation_method": (
-            "any_required_variable_finite_over_complete_requested_dataset"
+            "all_required_variables_finite_over_complete_requested_dataset"
         ),
         "derivation_scope": "native_copernicus_request_before_temporal_split",
         "required_source_variables": json.dumps(
@@ -219,6 +304,34 @@ def _with_copernicus_source_valid_mask(
     result = dataset.copy()
     result["source_valid_mask"] = source_valid_mask
     return result
+
+
+def _select_hourly_aligned(
+    dataset: xr.Dataset, *, start: datetime, end: datetime
+) -> xr.Dataset:
+    """Select exact UTC whole-hour values lazily before loading 15-minute currents."""
+
+    if "time" not in dataset.coords:
+        raise DataValidationError("含潮总流缺少 time 坐标，不能安全抽取逐小时值")
+    values = np.asarray(dataset.time.values)
+    if not np.issubdtype(values.dtype, np.datetime64) or values.ndim != 1:
+        raise DataValidationError("含潮总流 time 必须是一维 datetime64 坐标")
+    targets = np.arange(
+        np.datetime64(start.replace(tzinfo=None), "h"),
+        np.datetime64(end.replace(tzinfo=None), "h") + np.timedelta64(1, "h"),
+        np.timedelta64(1, "h"),
+    ).astype("datetime64[ns]")
+    source_values = values.astype("datetime64[ns]")
+    indices = np.searchsorted(source_values, targets)
+    if (
+        indices.size != targets.size
+        or np.any(indices >= source_values.size)
+        or not np.array_equal(source_values[indices], targets)
+    ):
+        raise DataValidationError(
+            "含潮总流 15 分钟时间轴没有覆盖全部 UTC 整点；禁止近邻代替"
+        )
+    return dataset.isel(time=xr.DataArray(indices, dims="time"))
 
 
 class NativeForecastAcquirer:
@@ -246,7 +359,17 @@ class NativeForecastAcquirer:
         step_hours: int = 3,
         cycle_lookback_count: int = 4,
         data_types: Iterable[str] = ("wind_field", "temperature", "visibility"),
+        mode: AcquisitionMode | str = AcquisitionMode.FROZEN_FORECAST,
     ) -> ForecastAcquisitionResult:
+        acquisition_mode = AcquisitionMode(mode)
+        if acquisition_mode is AcquisitionMode.RETROSPECTIVE_BEST_ESTIMATE:
+            return self.acquire_gfs_analysis(
+                route_id=route_id,
+                bounds=bounds,
+                start_time=as_of,
+                horizon_hours=horizon_hours,
+                data_types=data_types,
+            )
         requested_types = tuple(dict.fromkeys(data_types))
         if not requested_types:
             raise ValueError("GFS data_types 不能为空")
@@ -300,6 +423,8 @@ class NativeForecastAcquirer:
                     issue_evidence=evidence,
                     metadata={
                         "product_kind": "forecast",
+                        "acquisition_mode": acquisition_mode.value,
+                        "source_fidelity": "frozen_operational_forecast_cycle",
                         "source_snapshot_id": snapshot_id,
                         "forecast_cycle_id": f"{cycle:%Y%m%dT%HZ}",
                         "source_uri": source_url,
@@ -320,6 +445,223 @@ class NativeForecastAcquirer:
             records=tuple(records),
         )
 
+    def acquire_gfs_analysis(
+        self,
+        *,
+        route_id: str,
+        bounds: Bounds,
+        start_time: datetime,
+        horizon_hours: int,
+        data_types: Iterable[str] = ("wind_field", "temperature", "visibility"),
+    ) -> ForecastAcquisitionResult:
+        """Acquire NCEI f000 analyses every 6 h as retrospective best estimates."""
+
+        requested_types = tuple(dict.fromkeys(data_types))
+        unsupported = sorted(set(requested_types) - GFS_DATA_TYPES)
+        if not requested_types or unsupported:
+            raise ValueError(
+                "NCEI GFS analysis data_types 无效"
+                + (": " + ", ".join(unsupported) if unsupported else "")
+            )
+        if horizon_hours <= 0:
+            raise ValueError("horizon_hours 必须大于 0")
+        start = ensure_utc(start_time, field="start_time")
+        if start.minute or start.second or start.microsecond or start.hour % 6:
+            raise ValueError("NCEI GFS analysis 窗口必须从 00/06/12/18Z 整点开始")
+        end = start + timedelta(hours=horizon_hours)
+        cycles = []
+        current = start
+        while current <= end:
+            cycles.append(current)
+            current += timedelta(hours=6)
+        records: list[ManifestRecord] = []
+        snapshots: list[str] = []
+        for cycle in cycles:
+            path, evidence, source_url = self._obtain_ncei_analysis_file(
+                cycle=cycle,
+                data_types=requested_types,
+            )
+            request_metadata_path = path.with_suffix(path.suffix + ".metadata.json")
+            request_metadata = json.loads(
+                request_metadata_path.read_text(encoding="utf-8")
+            )
+            snapshot_id = (
+                f"ncei-gfs-analysis-{cycle:%Y%m%dT%HZ}-"
+                f"{_gfs_request_signature(bounds, requested_types)}"
+            )
+            snapshots.append(snapshot_id)
+            datasets = _open_gfs_data_types(path, requested_types)
+            for data_type, source_dataset in datasets.items():
+                dataset = _crop_rectilinear(source_dataset, bounds)
+                dataset.attrs.update(
+                    {
+                        "product_id": "NCEI_GFS_GRID4_ANALYSIS",
+                        "forecast_reference_time": isoformat_utc(cycle),
+                        "source_snapshot_id": snapshot_id,
+                    }
+                )
+                published = self.publisher.publish_dataset(
+                    dataset,
+                    data_type=data_type,
+                    route_id=route_id,
+                    source="NOAA NCEI GFS 0.5-degree Analysis",
+                    version=snapshot_id,
+                    issue_evidence=evidence,
+                    metadata={
+                        "product_kind": "analysis",
+                        "acquisition_mode": (
+                            AcquisitionMode.RETROSPECTIVE_BEST_ESTIMATE.value
+                        ),
+                        "source_fidelity": "retrospective_f000_analysis",
+                        "source_snapshot_id": snapshot_id,
+                        "analysis_cycle_id": f"{cycle:%Y%m%dT%HZ}",
+                        "forecast_lead_hours": 0,
+                        "source_uri": source_url,
+                        "source_file": path.name,
+                        "source_file_checksum": sha256_file(path),
+                        "source_snapshot_relative_path": path.relative_to(
+                            self.data_root
+                        ).as_posix(),
+                        "source_inventory_file": request_metadata["inventory_file"],
+                        "source_inventory_checksum": request_metadata[
+                            "inventory_checksum"
+                        ],
+                        "source_byte_ranges": request_metadata["byte_ranges"],
+                        "source_request_metadata_relative_path": (
+                            request_metadata_path.relative_to(self.data_root).as_posix()
+                        ),
+                        "nominal_interval_hours": 6.0,
+                        "knowledge_time_policy": (
+                            "NCEI archive Last-Modified/retrieval gate; replay as_of must "
+                            "not predate issue_time"
+                        ),
+                    },
+                )
+                records.extend(published.records)
+        return ForecastAcquisitionResult(
+            source="NOAA NCEI GFS 0.5-degree Analysis",
+            route_id=route_id,
+            source_snapshot_ids=tuple(snapshots),
+            records=tuple(records),
+        )
+
+    def _acquire_ncei_analysis_file(self, **kwargs):
+        """Compatibility spelling retained for tests/extensions."""
+
+        return self._obtain_ncei_analysis_file(**kwargs)
+
+    def _obtain_ncei_analysis_file(
+        self,
+        *,
+        cycle: datetime,
+        data_types: tuple[str, ...],
+    ) -> tuple[Path, IssueTimeEvidence, str]:
+        base_url = ncei_gfs_analysis_url(cycle)
+        inventory_url = base_url + ".inv"
+        inventory_response = self.http.get(
+            inventory_url, timeout=self.request_timeout_seconds
+        )
+        inventory_response.raise_for_status()
+        inventory_text = inventory_response.text
+        inventory_bytes = bytes(getattr(inventory_response, "content", b""))
+        if not inventory_bytes:
+            inventory_bytes = inventory_text.encode("utf-8")
+        ranges = ncei_inventory_ranges(inventory_text, data_types=data_types)
+        signature = hashlib.sha256(
+            json.dumps(ranges, sort_keys=True).encode()
+        ).hexdigest()[:12]
+        directory = (
+            self.data_root
+            / "source_snapshots"
+            / "ncei_gfs_analysis"
+            / f"{cycle:%Y%m%dT%HZ}"
+        )
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"gfs-grid4-anl-f000.{signature}.grib2"
+        inventory_checksum = hashlib.sha256(inventory_bytes).hexdigest()
+        inventory_path = directory / (
+            f"gfs-grid4-anl-f000.{inventory_checksum[:12]}.grib2.inv"
+        )
+        _atomic_bytes(inventory_path, inventory_bytes)
+        if not path.is_file() or not _valid_grib(path):
+            temporary = path.with_suffix(path.suffix + f".{os.getpid()}.part")
+            try:
+                with temporary.open("wb") as handle:
+                    for start, end in ranges:
+                        headers = {
+                            "Range": (
+                                f"bytes={start}-{end}"
+                                if end is not None
+                                else f"bytes={start}-"
+                            )
+                        }
+                        response = self.http.get(
+                            base_url,
+                            headers=headers,
+                            timeout=self.request_timeout_seconds,
+                            stream=True,
+                        )
+                        try:
+                            response.raise_for_status()
+                            _validate_partial_content_response(
+                                response,
+                                start=start,
+                                end=end,
+                            )
+                            body = bytes(response.content)
+                            if end is not None and len(body) != end - start + 1:
+                                raise DataValidationError(
+                                    "NCEI Range 响应实际字节数与请求不一致"
+                                )
+                            handle.write(body)
+                        finally:
+                            with suppress(AttributeError):
+                                response.close()
+            except Exception:
+                temporary.unlink(missing_ok=True)
+                raise
+            if not _valid_grib(temporary):
+                temporary.unlink(missing_ok=True)
+                raise DataValidationError("NCEI Range 响应无法组成完整的所需 GRIB2 消息")
+            temporary.replace(path)
+        observed = datetime.now(UTC)
+        last_modified = inventory_response.headers.get("Last-Modified")
+        issue = observed
+        method = IssueTimeMethod.CONSERVATIVE_RETRIEVAL
+        authoritative = False
+        if last_modified:
+            with suppress(ValueError, TypeError, OverflowError):
+                parsed = parsedate_to_datetime(last_modified)
+                aware = parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+                issue = aware.astimezone(UTC)
+                method = IssueTimeMethod.HTTP_LAST_MODIFIED
+                authoritative = True
+        evidence = IssueTimeEvidence(
+            issue_time=issue,
+            method=method,
+            authority="NOAA NCEI archive",
+            reference=inventory_url,
+            observed_at=observed,
+            raw_value=last_modified or isoformat_utc(observed),
+            authoritative=authoritative,
+        )
+        _atomic_json(
+            path.with_suffix(path.suffix + ".metadata.json"),
+            {
+                "source_url": base_url,
+                "inventory_url": inventory_url,
+                "inventory_file": inventory_path.name,
+                "inventory_checksum": inventory_checksum,
+                "byte_ranges": [
+                    [start, end] for start, end in ranges
+                ],
+                "subset_checksum": sha256_file(path),
+                "retrieved_at": isoformat_utc(observed),
+                "issue_time_evidence": evidence.to_dict(),
+            },
+        )
+        return path, evidence, base_url
+
     def acquire_copernicus(
         self,
         *,
@@ -328,7 +670,9 @@ class NativeForecastAcquirer:
         start_time: datetime,
         horizon_hours: int = 156,
         data_types: Iterable[str] = tuple(COPERNICUS_FORECAST_SPECS),
+        mode: AcquisitionMode | str = AcquisitionMode.FROZEN_FORECAST,
     ) -> ForecastAcquisitionResult:
+        acquisition_mode = AcquisitionMode(mode)
         requested_types = tuple(dict.fromkeys(data_types))
         if not requested_types:
             raise ValueError("Copernicus data_types 不能为空")
@@ -337,11 +681,18 @@ class NativeForecastAcquirer:
             raise ValueError(f"Copernicus 不支持这些 data_type: {', '.join(unsupported)}")
         if horizon_hours <= 0 or horizon_hours > 240:
             raise ValueError("Copernicus horizon_hours 必须位于 [1, 240]")
+        reuse_nextsim = {"sea_ice_type", "sea_ice_edge"}.issubset(requested_types)
+        if reuse_nextsim:
+            requested_types = (
+                "sea_ice_type",
+                *(item for item in requested_types if item != "sea_ice_type"),
+            )
         start = ensure_utc(start_time, field="start_time")
         end = start + timedelta(hours=horizon_hours)
         records: list[ManifestRecord] = []
         snapshot_ids: list[str] = []
         warnings: list[str] = []
+        nextsim_source_dataset: xr.Dataset | None = None
         open_dataset = self._copernicus_open_dataset
         if open_dataset is None:
             try:
@@ -354,28 +705,62 @@ class NativeForecastAcquirer:
             username = password = None
 
         for data_type in requested_types:
-            spec = COPERNICUS_FORECAST_SPECS[data_type]
-            kwargs: dict[str, Any] = {
-                "dataset_id": spec.dataset_id,
-                "dataset_part": "default",
-                "variables": list(spec.variables),
-                "minimum_longitude": bounds.west,
-                "maximum_longitude": bounds.east,
-                "minimum_latitude": bounds.south,
-                "maximum_latitude": bounds.north,
-                "start_datetime": start,
-                "end_datetime": end,
-                "coordinates_selection_method": "outside",
-            }
-            if spec.surface_depth:
-                kwargs.update({"minimum_depth": 0, "maximum_depth": 0})
-            if username and password:
-                kwargs.update({"username": username, "password": password})
-            opened = open_dataset(**kwargs)
-            try:
-                dataset = opened.load()
-            finally:
-                opened.close()
+            preferred_spec = COPERNICUS_FORECAST_SPECS[data_type]
+            candidates = (preferred_spec,)
+            if data_type == "ocean_current":
+                candidates = (preferred_spec, COPERNICUS_DETIDED_CURRENT_FALLBACK)
+            failures: list[str] = []
+            for spec in candidates:
+                if (
+                    nextsim_source_dataset is not None
+                    and spec.dataset_id == "cmems_mod_arc_phy_anfc_nextsim_hm"
+                    and set(spec.variables).issubset(nextsim_source_dataset.data_vars)
+                ):
+                    dataset = nextsim_source_dataset.copy(deep=False)
+                    output_interval = spec.nominal_interval_hours
+                    break
+                kwargs: dict[str, Any] = {
+                    "dataset_id": spec.dataset_id,
+                    "dataset_part": "default",
+                    "variables": list(spec.variables),
+                    "minimum_longitude": bounds.west,
+                    "maximum_longitude": bounds.east,
+                    "minimum_latitude": bounds.south,
+                    "maximum_latitude": bounds.north,
+                    "start_datetime": start,
+                    "end_datetime": end,
+                    "coordinates_selection_method": "outside",
+                }
+                if spec.surface_depth:
+                    kwargs.update({"minimum_depth": 0, "maximum_depth": 0})
+                if username and password:
+                    kwargs.update({"username": username, "password": password})
+                try:
+                    opened = open_dataset(**kwargs)
+                    try:
+                        output_interval = spec.nominal_interval_hours
+                        if spec.current_component == "total":
+                            opened = _select_hourly_aligned(opened, start=start, end=end)
+                            output_interval = 1.0
+                        dataset = opened.load()
+                    finally:
+                        opened.close()
+                    if reuse_nextsim and data_type == "sea_ice_type":
+                        nextsim_source_dataset = dataset.copy(deep=False)
+                    break
+                except Exception as exc:
+                    failures.append(
+                        f"{spec.dataset_id}: {type(exc).__name__}: {exc!r}"
+                    )
+            else:
+                raise DataValidationError(
+                    f"{data_type} 的 Copernicus 首选/后备源均失败: " + " | ".join(failures)
+                )
+            if spec is not preferred_spec:
+                warnings.append(
+                    "ocean_current 含潮总流不可用，已明确降级为 detided 后备；"
+                    "两者未相加"
+                )
             retrieved_at = datetime.now(UTC)
             dataset = _with_copernicus_source_valid_mask(
                 dataset,
@@ -383,6 +768,10 @@ class NativeForecastAcquirer:
                 requested_start=start,
                 requested_end=end,
             )
+            if data_type == "sea_ice_type":
+                dataset = derive_sea_ice_type(dataset)
+            elif data_type == "sea_ice_edge":
+                dataset = derive_sea_ice_edge(dataset)
             valid_times = discover_valid_times(dataset)
             snapshot_id = _snapshot_id(spec.dataset_id, retrieved_at, valid_times)
             snapshot_ids.append(snapshot_id)
@@ -391,6 +780,13 @@ class NativeForecastAcquirer:
                     "copernicus_product": spec.product_id,
                     "copernicus_dataset_id": spec.dataset_id,
                     "source_snapshot_id": snapshot_id,
+                    "acquisition_mode": acquisition_mode.value,
+                    "source_fidelity": (
+                        "retrospective_best_estimate"
+                        if acquisition_mode
+                        is AcquisitionMode.RETROSPECTIVE_BEST_ESTIMATE
+                        else "frozen_service_forecast_snapshot"
+                    ),
                 }
             )
             evidence = IssueTimeEvidence(
@@ -411,7 +807,19 @@ class NativeForecastAcquirer:
                 version=snapshot_id,
                 issue_evidence=evidence,
                 metadata={
-                    "product_kind": "forecast",
+                    "product_kind": (
+                        "retrospective_best_estimate"
+                        if acquisition_mode
+                        is AcquisitionMode.RETROSPECTIVE_BEST_ESTIMATE
+                        else "forecast"
+                    ),
+                    "acquisition_mode": acquisition_mode.value,
+                    "source_fidelity": (
+                        "retrospective_best_estimate"
+                        if acquisition_mode
+                        is AcquisitionMode.RETROSPECTIVE_BEST_ESTIMATE
+                        else "frozen_service_forecast_snapshot"
+                    ),
                     "source_snapshot_id": snapshot_id,
                     "product_id": spec.product_id,
                     "dataset_id": spec.dataset_id,
@@ -425,12 +833,32 @@ class NativeForecastAcquirer:
                     "source_snapshot_relative_path": source_file.relative_to(
                         self.data_root
                     ).as_posix(),
-                    "nominal_interval_hours": spec.nominal_interval_hours,
+                    "nominal_interval_hours": output_interval,
+                    "source_native_interval_hours": spec.nominal_interval_hours,
+                    "output_interval_hours": output_interval,
+                    "temporal_selection": (
+                        "strict_utc_whole_hour_before_load"
+                        if spec.current_component == "total"
+                        else "native"
+                    ),
+                    "current_component": spec.current_component,
+                    "tide_included": spec.tide_included,
+                    "derivation_method": spec.derivation,
+                    "source_combination_policy": (
+                        "single_source_preferred_then_detided_fallback_never_sum"
+                        if data_type == "ocean_current"
+                        else None
+                    ),
+                    "source_fallback_reason": (
+                        " | ".join(failures) if spec is not preferred_spec else None
+                    ),
                     "requested_start": isoformat_utc(start),
                     "requested_end": isoformat_utc(end),
                 },
             )
             records.extend(published.records)
+            if data_type == "sea_ice_edge":
+                nextsim_source_dataset = None
             available_start = min(valid_times)
             available_end = max(valid_times)
             if available_start > start or available_end < end:
@@ -635,6 +1063,100 @@ def build_gfs_filter_params(
     return params
 
 
+def ncei_gfs_analysis_url(cycle: datetime) -> str:
+    cycle = ensure_utc(cycle, field="cycle")
+    if cycle.minute or cycle.second or cycle.microsecond or cycle.hour % 6:
+        raise ValueError("NCEI GFS analysis cycle 必须是 00/06/12/18Z")
+    return (
+        f"{NCEI_GFS_ANALYSIS_ROOT}/{cycle:%Y%m}/{cycle:%Y%m%d}/"
+        f"gfs_4_{cycle:%Y%m%d_%H00}_000.grb2"
+    )
+
+
+def ncei_inventory_ranges(
+    inventory: str,
+    *,
+    data_types: Iterable[str],
+) -> tuple[tuple[int, int | None], ...]:
+    patterns: dict[str, tuple[str, ...]] = {
+        "wind_field": (":UGRD:10 m above ground:anl:", ":VGRD:10 m above ground:anl:"),
+        "temperature": (":TMP:2 m above ground:anl:",),
+        "visibility": (":VIS:surface:anl:",),
+    }
+    requested_patterns = tuple(
+        pattern for data_type in data_types for pattern in patterns[data_type]
+    )
+    entries: list[tuple[int, str]] = []
+    for line in inventory.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) != 3:
+            continue
+        try:
+            entries.append((int(parts[1]), line))
+        except ValueError:
+            continue
+    ranges = []
+    matched: set[str] = set()
+    for index, (offset, line) in enumerate(entries):
+        matching = next((pattern for pattern in requested_patterns if pattern in line), None)
+        if matching is None:
+            continue
+        matched.add(matching)
+        next_offset = entries[index + 1][0] if index + 1 < len(entries) else None
+        ranges.append((offset, next_offset - 1 if next_offset is not None else None))
+    missing = sorted(set(requested_patterns) - matched)
+    if missing:
+        raise DataValidationError("NCEI inventory 缺少所需分析记录: " + ", ".join(missing))
+    return tuple(sorted(ranges))
+
+
+def _validate_partial_content_response(
+    response: Any,
+    *,
+    start: int,
+    end: int | None,
+) -> None:
+    """Reject servers/proxies that ignore Range before reading a global GRIB body."""
+
+    if getattr(response, "status_code", None) != 206:
+        raise DataValidationError(
+            "NCEI 未返回 206 Partial Content；拒绝下载 150MB 级全球文件"
+        )
+    content_range = str(response.headers.get("Content-Range", ""))
+    expected_prefix = f"bytes {start}-{end if end is not None else ''}"
+    if not content_range.startswith(expected_prefix):
+        raise DataValidationError(
+            f"NCEI Content-Range 与请求不一致: {content_range!r}"
+        )
+    if end is not None:
+        expected_size = end - start + 1
+        declared_size = response.headers.get("Content-Length")
+        if declared_size is not None and int(declared_size) != expected_size:
+            raise DataValidationError("NCEI Content-Length 与请求字节范围不一致")
+
+
+def _crop_rectilinear(dataset: xr.Dataset, bounds: Bounds) -> xr.Dataset:
+    west = bounds.west % 360
+    east = bounds.east % 360
+    if west <= east:
+        result = dataset.sel(longitude=slice(west, east))
+    else:
+        result = xr.concat(
+            (
+                dataset.sel(longitude=slice(west, 360)),
+                dataset.sel(longitude=slice(0, east)),
+            ),
+            dim="longitude",
+        )
+    latitude = result.latitude
+    lat_slice = (
+        slice(bounds.north, bounds.south)
+        if float(latitude[0]) > float(latitude[-1])
+        else slice(bounds.south, bounds.north)
+    )
+    return result.sel(latitude=lat_slice)
+
+
 def _open_gfs_data_types(path: Path, requested: Iterable[str]) -> dict[str, xr.Dataset]:
     try:
         import cfgrib
@@ -722,4 +1244,10 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
     temporary.write_text(
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
     )
+    temporary.replace(path)
+
+
+def _atomic_bytes(path: Path, value: bytes) -> None:
+    temporary = path.with_suffix(path.suffix + f".{os.getpid()}.part")
+    temporary.write_bytes(value)
     temporary.replace(path)

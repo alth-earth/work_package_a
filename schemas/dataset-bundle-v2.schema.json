@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/arctic-route/dataset-bundle-v2.schema.json",
+  "title": "Work package A independently verifiable dataset bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "bundle_id", "bundle_digest", "corridor_id", "as_of_time", "requested_start", "requested_end", "minimum_required_end", "requested_data_types", "source_snapshot_ids", "record_count", "records", "coverage"],
+  "properties": {
+    "schema_version": {"const": "a.dataset-bundle.v2"},
+    "bundle_id": {"type": "string", "pattern": "^a-bundle-[0-9a-f]{24}$"},
+    "bundle_digest": {"$ref": "#/$defs/digest"},
+    "corridor_id": {"type": "string", "minLength": 1},
+    "as_of_time": {"type": "string", "format": "date-time"},
+    "requested_start": {"type": "string", "format": "date-time"},
+    "requested_end": {"type": "string", "format": "date-time"},
+    "minimum_required_end": {"type": "string", "format": "date-time"},
+    "requested_data_types": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "source_snapshot_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "record_count": {"type": "integer", "minimum": 0},
+    "records": {"type": "array", "items": {"$ref": "#/$defs/record"}},
+    "coverage": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/coverage"}}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nullableTime": {"anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]},
+    "snapshot": {"anyOf": [{"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+\\-]{0,127}$"}, {"type": "null"}]},
+    "record": {
+      "type": "object", "additionalProperties": false,
+      "required": ["data_id", "data_type", "issue_time", "valid_time", "source", "version", "quality_flag", "checksum", "source_snapshot_id"],
+      "properties": {
+        "data_id": {"type": "string", "minLength": 1}, "data_type": {"type": "string", "minLength": 1},
+        "issue_time": {"type": "string", "format": "date-time"}, "valid_time": {"type": "string", "format": "date-time"},
+        "source": {"type": "string", "minLength": 1}, "version": {"type": "string", "minLength": 1},
+        "quality_flag": {"enum": ["good", "suspect", "degraded"]}, "checksum": {"$ref": "#/$defs/digest"},
+        "source_snapshot_id": {"$ref": "#/$defs/snapshot"}
+      }
+    },
+    "coverage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["data_type", "record_count", "records_digest", "provenance_digest", "available_start", "available_end", "expected_interval_hours", "missing_intervals", "source_snapshot_ids", "has_start_support", "meets_minimum_horizon", "covers_requested_window", "provenance_complete", "complete", "coverage_digest"],
+      "properties": {
+        "data_type": {"type": "string", "minLength": 1}, "record_count": {"type": "integer", "minimum": 0},
+        "records_digest": {"$ref": "#/$defs/digest"}, "provenance_digest": {"$ref": "#/$defs/digest"},
+        "available_start": {"$ref": "#/$defs/nullableTime"}, "available_end": {"$ref": "#/$defs/nullableTime"},
+        "expected_interval_hours": {"anyOf": [{"type": "number", "exclusiveMinimum": 0}, {"type": "null"}]},
+        "missing_intervals": {"type": "array", "items": {"type": "array", "prefixItems": [{"type": "string", "format": "date-time"}, {"type": "string", "format": "date-time"}], "minItems": 2, "maxItems": 2}},
+        "source_snapshot_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "has_start_support": {"type": "boolean"}, "meets_minimum_horizon": {"type": "boolean"},
+        "covers_requested_window": {"type": "boolean"}, "provenance_complete": {"type": "boolean"},
+        "complete": {"type": "boolean"}, "coverage_digest": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

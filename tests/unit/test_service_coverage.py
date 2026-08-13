@@ -5,7 +5,7 @@ import pytest
 from arctic_route_data.bundle import record_provenance_id
 from arctic_route_data.cache import PartitionedABCache
 from arctic_route_data.clock import SimulationClock
-from arctic_route_data.errors import StaleGenerationError
+from arctic_route_data.errors import FutureInformationError, StaleGenerationError
 from arctic_route_data.events import DataLoadFailureEvent, EventBus
 from arctic_route_data.models import DataCategory, StandardDataFrame
 from arctic_route_data.service import WorkPackageA
@@ -214,6 +214,40 @@ def test_manifest_nominal_interval_overrides_legacy_data_type_default(make_recor
     )
 
 
+def test_hourly_service_coverage_rejects_ninety_minute_spacing(make_record):
+    records = [
+        make_record(
+            data_id=f"ice-{index:03d}",
+            data_type="sea_ice_type",
+            category=DataCategory.SLOW,
+            variables=("ice_type",),
+            issue_time=T0 - timedelta(hours=1),
+            valid_time=T0 + timedelta(minutes=90 * index),
+            metadata=_provenance("cmems-hourly", interval=1.0),
+        )
+        for index in range(105)
+    ]
+    service = WorkPackageA(
+        source=_Source(records),
+        clock=SimulationClock(T0),
+        cache=PartitionedABCache(max_memory_mb=2),
+    )
+
+    report = service.prepare_window_for_b(
+        route_id="route-a",
+        data_types=["sea_ice_type"],
+        target_horizon_hours=156,
+        minimum_complete_horizon_hours=156,
+    ).coverage["sea_ice_type"]
+
+    assert report.expected_interval_hours == 1.0
+    assert report.missing_intervals[0] == (
+        T0,
+        T0 + timedelta(minutes=90),
+    )
+    assert not report.covers_requested_window
+
+
 def test_prepare_window_loads_upper_bracket_beyond_requested_end(make_record):
     source = _VerifiedSource(_records(make_record))
     service = WorkPackageA(
@@ -279,6 +313,50 @@ def test_prepare_window_keeps_historical_static_layer(make_record):
         "bathymetry"
     ]
     assert prepared.coverage["bathymetry"].complete
+
+
+def test_retrospective_window_separates_simulation_time_from_knowledge_cutoff(
+    make_record,
+):
+    issued_after_voyage = T0 + timedelta(days=20)
+    layer = make_record(
+        data_id="retrospective-static",
+        data_type="bathymetry",
+        category=DataCategory.STATIC,
+        variables=("elevation",),
+        issue_time=issued_after_voyage,
+        valid_time=T0,
+        metadata=_provenance("retrospective-static-snapshot"),
+    )
+    service = WorkPackageA(
+        source=_VerifiedSource([layer]),
+        clock=SimulationClock(T0),
+        cache=PartitionedABCache(max_memory_mb=1),
+    )
+
+    causal = service.prepare_window_for_b(
+        route_id="route-a",
+        data_types=["bathymetry"],
+    )
+    assert not causal.coverage["bathymetry"].complete
+
+    service.clock.seek(T0)
+    retrospective = service.prepare_window_for_b(
+        route_id="route-a",
+        data_types=["bathymetry"],
+        knowledge_as_of=issued_after_voyage,
+    )
+    assert retrospective.coverage["bathymetry"].complete
+    assert retrospective.as_of_time == issued_after_voyage
+    assert retrospective.dataset_bundle.as_of_time == issued_after_voyage
+    assert retrospective.dataset_bundle.requested_start == T0
+
+    with pytest.raises(FutureInformationError, match="knowledge_as_of"):
+        service.prepare_window_for_b(
+            route_id="route-a",
+            data_types=["bathymetry"],
+            knowledge_as_of=T0,
+        )
 
 
 def test_static_layer_without_source_snapshot_is_not_provenance_complete(make_record):

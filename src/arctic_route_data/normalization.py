@@ -133,7 +133,7 @@ def _canonicalize_unit(
     source_unit = _unit_key(original_unit)
     assumed = False
     if not source_unit:
-        if canonical_name in {"ice_type", "ice_edge"}:
+        if canonical_name in {"ice_type", "ice_edge", "land_sea_mask"}:
             source_unit = _unit_key(unit)
             assumed = True
         else:
@@ -494,12 +494,25 @@ def _validate_source_valid_mask(
     if mask.size == 0 or not bool(mask.any().item()):
         raise DataValidationError("source_valid_mask 没有任何有效空间单元")
 
-    required_attrs = {
-        "semantic_version": "a.source-valid-mask.v1",
-        "semantic_role": "source_valid_domain",
-        "derivation_method": (
+    semantic_version = str(mask.attrs.get("semantic_version", ""))
+    supported_methods = {
+        "a.source-valid-mask.v1": (
             "any_required_variable_finite_over_complete_requested_dataset"
         ),
+        "a.source-valid-mask.v2": (
+            "all_required_variables_finite_over_complete_requested_dataset"
+        ),
+    }
+    try:
+        derivation_method = supported_methods[semantic_version]
+    except KeyError as exc:
+        raise DataValidationError(
+            "source_valid_mask.semantic_version 必须是受支持的 "
+            "a.source-valid-mask.v1/v2"
+        ) from exc
+    required_attrs = {
+        "semantic_role": "source_valid_domain",
+        "derivation_method": derivation_method,
         "derivation_scope": "native_copernicus_request_before_temporal_split",
         "navigation_semantics": "none",
         "classification_semantics": "none",
@@ -785,7 +798,7 @@ def normalize_dataset(
             if source_valid_mask is not None
             else "full_frame_without_explicit_source_valid_mask"
         ),
-        "normalizer_version": "arctic-route-data/0.3.1",
+        "normalizer_version": "arctic-route-data/0.4.0",
     }
     return working
 

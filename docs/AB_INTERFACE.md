@@ -1,4 +1,4 @@
-# A → B（AB）接口 v0.3.1
+# A → B（AB）接口 v0.4.0
 
 本文是工作包 A 已实现接口的真源。B→C 的正式合同以
 `work_package_c/docs/BC_CONTRACT.md`、C 的 Python 模型和 JSON Schema 为准。
@@ -16,7 +16,7 @@
 
 ```python
 assert frame.record.route_id == corridor_id
-assert frame.record.issue_time <= as_of_time
+assert frame.record.issue_time <= knowledge_as_of
 assert frame.generation_id == generation_id
 ```
 
@@ -56,22 +56,25 @@ relative_path, size_bytes, media_type, metadata
 payload，应创建自己的派生 Dataset。
 
 `content_qc.source_valid_mask` 若 `present=true`，只表示原生 Copernicus
-完整请求中派生的源数据空间有效域。`structural_mask_fraction` 是该域之外的
+完整请求中派生的源数据空间有效域。新 `a.source-valid-mask.v2` 要求所有必需源变量
+在完整请求窗内均有有限值；旧 v1 的任一变量语义只为历史兼容。`structural_mask_fraction` 是该域之外的
 结构无效占比，`valid_domain_missing_fraction` 才是域内残余缺测。这个 mask
 明确没有 navigation/classification 语义，B 不得将它直接转为陆海掩膜或
 `hard_mask`。旧帧没有显式证据时，A 不推断这一掩膜。
 普通 direct/sidecar producer 不能凭自报 attrs 获得该语义；A 要求 mask 与归档
 Copernicus source snapshot 的精确路径、SHA-256、dataset ID、请求起止时刻绑定，
-并对快照内 mask 做逐值、坐标和语义一致性检查。
+并对快照内 mask 做逐值、坐标和语义一致性检查。它不能替代正式
+`land_sea_mask`；后者也只是海陆分类，不自动等于可通航 `hard_mask`。
 
 ## 3. 首选入口：一次性准备一致窗口
 
 ```python
 prepared = a.prepare_window_for_b(
-    route_id="tromso_to_svalbard",
+    route_id="offshore_murmansk_to_offshore_dikson",
     data_types=["wind_field", "wave", "ocean_current"],
-    target_horizon_hours=156,
-    minimum_complete_horizon_hours=132,
+    target_horizon_hours=168,
+    minimum_complete_horizon_hours=168,
+    knowledge_as_of=knowledge_as_of,
 )
 ```
 
@@ -101,15 +104,16 @@ provenance_complete, complete
 规则：
 
 - `start_time` 当前必须等于模拟时钟；
-- 整次调用固定同一个 `ClockSnapshot/as_of_time`，并把它原样返回为
-  `PreparedWindow.as_of_time`；
+- 整次调用固定同一个 `ClockSnapshot`。`PreparedWindow.as_of_time` 和
+  `DatasetBundle.as_of_time` 为允许使用 revision 的 `knowledge_as_of`；因果模式中
+  它等于模拟时钟，事后最佳估计模式可显式更晚；
 - 开始后时钟普通推进或 seek 都会抛 `StaleGenerationError`，调用方重试；
 - 时间数据保留起点之前/等于起点的最近一帧、窗内帧，以及请求末端之后/
   等于末端的最近一帧，便于 B 做边界插值；
 - `has_start_support`：至少有一帧 `valid_time <= requested_start` 且一帧
   `valid_time >= requested_start`；
 - `meets_minimum_horizon`：有起点支撑、末端达到
-  `minimum_required_end`，且在该范围内无超限内部缺口；它是“最低可用”
+  `minimum_required_end`，且在该范围内无超限内部缺口；它只是“最低可用”
   状态，不等于完整请求窗；
 - `covers_requested_window`：同样的条件延伸到 `requested_end`；
 - `provenance_complete`：归档型 DataSource 已对每条选中记录实际验证 ready
@@ -118,18 +122,19 @@ provenance_complete, complete
   metadata 都不算完整，static/event 也执行同一规则；
 - `complete = covers_requested_window and provenance_complete`；不得因
   `meets_minimum_horizon=true` 就把 `complete` 改写为 true；
-- 内部间隔超过 `1.5 * expected_interval_hours` 才记入 `missing_intervals`；
+- 内部间隔超过 `expected_interval_hours` 即记入 `missing_intervals`；不允许用 1.5 倍
+  容差把 90 分钟帧冒充每小时连续窗；
 - static/event 会检索历史有效项，不会因为 `valid_time < requested_start` 被误删；
 - `complete=false` 是正式缺测，不得用零值或“安全环境”替代。
 
 节奏解析优先级为：调用方显式 `expected_interval_hours` > 帧 metadata
-`nominal_interval_hours` > `service.py` 旧数据兼容后备。原生 GFS 声明
-3 h、Copernicus wave 声明 3 h，当前 Arctic current/water/ice 原生产品
+`nominal_interval_hours` > `service.py` 旧数据兼容后备。冻结预报 GFS 声明
+3 h、NCEI 历史分析声明 6 h、Copernicus wave 声明 3 h，当前 Arctic current/water/ice 原生产品
 声明 1 h。`current/water=6 h`、`海冰=24 h` 只是缺少 metadata 的旧帧
 后备，不是当前原生产品 cadence。同一窗口出现多个冲突声明时 A 拒绝隐式
 选择；B 若需更密帧，应在自己的时间处理层生成并记录模型版本。
 
-### 3.1 `DatasetBundle.v1`：一次 AB 输入的精确身份
+### 3.1 `DatasetBundle.v2`：一次 AB 输入的精确身份与覆盖证明
 
 单个 `source_snapshot_id` 只识别一个源产品/模型周期及其裁剪选择；例如相同
 GFS cycle+bbox+types 的不同长度采集会复用该 ID。它既不是精确执行 ID，也不能
@@ -137,7 +142,7 @@ GFS cycle+bbox+types 的不同长度采集会复用该 ID。它既不是精确�
 因此固结：
 
 ```text
-schema_version="a.dataset-bundle.v1"
+schema_version="a.dataset-bundle.v2"
 bundle_id, bundle_digest
 corridor_id, as_of_time
 requested_start, requested_end, minimum_required_end
@@ -145,6 +150,7 @@ requested_data_types, source_snapshot_ids
 record_count
 records[] = data_id, data_type, issue_time, valid_time,
             source, version, quality_flag, checksum, source_snapshot_id
+coverage[] = 每类型 records/provenance digest、cadence、support、gaps、complete
 ```
 
 `bundle_digest` 为上述查询边界和全部实际选中记录（包括边界支撑帧）的
@@ -152,21 +158,33 @@ records[] = data_id, data_type, issue_time, valid_time,
 corridor、future issue、重复 data ID 和 `missing` payload。B 应把
 `bundle_id + bundle_digest` 作为本次输入身份保留到模型运行/场景证据中，不要
 仅保存一个上游 snapshot ID。结构真源是
-`schemas/dataset-bundle-v1.schema.json`。
+`schemas/dataset-bundle-v2.schema.json`。v2 的 `complete` 不是可信声明：共享
+`arctic_route_contracts` 会从 records 独立重算逐类型 coverage，核对正式 cadence，
+并要求所有 requested type 都满足完整窗和 provenance。v1 schema 仅用于读取历史
+bundle；正式 RunContext 必须拒绝 v1。
 跨进程消费必须调用 `DatasetBundle.from_dict()` 校验 record count、规范排序、
 来源 ID 集合和 digest；JSON Schema 只能检查形状，不能独自证明内容身份。
+
+这里的 `DatasetBundle.complete` 只证明调用方所请求类型的窗口完整；正式
+`RunContext.v2` 还会按共享场景画像复核类型集合。当前画像要求 12 类运行层完整：
+风、温度、能见度、波浪、海流、水位、五类海冰层以及 `land_sea_mask`；
+`bathymetry` 和 `long_term_restricted_area` 是可选研究/信息层。两类可选层仍是 A
+已经实现的正式接口，且完整 14 类来源验收仍应包含它们；“可选”既不等于未实现，也
+不允许把水深或限制区自动升级为 `hard_mask`。
 
 CLI 可原子持久该 JSON：
 
 ```bash
 .mamba-env/bin/uv run arctic-data replay \
   --data-root data \
-  --route-id tromso_to_svalbard \
-  --at 2026-08-11T16:00:00Z \
+  --route-id offshore_murmansk_to_offshore_dikson \
+  --at 2026-07-15T00:00:00Z \
+  --mode retrospective_best_estimate \
+  --knowledge-as-of 2026-08-12T14:00:00Z \
   --types wind_field wave ocean_current \
-  --horizon-hours 156 \
-  --minimum-horizon-hours 132 \
-  --bundle-output data/output/bundles/tromso-example.json \
+  --horizon-hours 168 \
+  --minimum-horizon-hours 168 \
+  --bundle-output data/output/bundles/murmansk-july.json \
   --summary-only
 ```
 
@@ -182,7 +200,8 @@ records 仍原子写入文件。任一必需层不完整时默认返回非零且
 a.prefetch(
     route_id=corridor_id,
     data_types=["wind_field"],
-    horizon_hours=156,
+    horizon_hours=requested_horizon_hours,
+    knowledge_as_of=knowledge_as_of,
 )
 
 # 模拟时刻及以前的最新有效帧，不会返回最远未来预报
@@ -196,7 +215,7 @@ frames = a.window_for_b(
     corridor_id,
     "wind_field",
     hours_before=48,
-    hours_after=156,
+    hours_after=requested_horizon_hours,
 )
 
 # 直接查询来源前后支撑帧
@@ -204,7 +223,7 @@ lower, upper = a.source.get_bracketing(
     "wind_field",
     target_time,
     route_id=corridor_id,
-    as_of=as_of_time,
+    as_of=knowledge_as_of,
 )
 ```
 
@@ -253,8 +272,10 @@ with cache.lease(frame.record.data_id) as leased:
 4. 没有提供新模拟时刻的直接 `reset_generation()` 会安全清空 static；
 5. 旧代次加载在 `cache.put()` 时被拒绝。
 
-B 开始计算时冻结 `(scenario_id, corridor_id, generation_id, as_of_time,
-config_digest)`；发布 RiskFrame 前再次核对。普通 tick 不增加 generation，所以长计算还应比较冻结的 `as_of_time` 或由编排器取消/重试。
+B 开始计算时从 `RunContext.v2` 冻结 `(run_id, scenario_id, corridor_id,
+vessel_profile_id, generation_id, config_digest)`，并另外冻结 simulation/knowledge
+时间；发布 RiskFrame 前再次核对。普通 tick 不增加 generation，所以长计算还应比较
+冻结时刻或由编排器取消/重试。
 
 ## 7. B 的空间/时间处理责任
 
@@ -267,7 +288,7 @@ config_digest)`；发布 RiskFrame 前再次核对。普通 tick 不增加 gener
 | 保护区 | 有效 GeoJSON + 法律/来源摘要 | 场景政策决定 hard/soft/information；不能按图层名自动 hard-mask |
 | 缺测 | `quality_flag`、QC、缺口 | 降低 confidence 或明确拒绝；禁止补零当安全 |
 
-当前 C 的 `RiskFrame v1` 只接受 EPSG:4326、严格递增的一维
+当前 C 的 `RiskFrame v2` 只接受 EPSG:4326、严格递增的一维
 `latitude/longitude` 二维网格。A 可能提供 rectilinear、curvilinear 或
 unstructured point 数据；正式 B 必须把兼容输入对齐到共享场景网格，并为越界/覆盖不足 fail closed。
 
@@ -292,7 +313,7 @@ checksum    <- record.checksum
 A 会在第三方/未来来源进入 AB 缓存前二次校验：
 
 1. `list_available()` 每一项必须是 `ManifestRecord`，且 route/type 精确
-   匹配当前请求、`issue_time <=` 固定 `as_of_time`；
+   匹配当前请求、`issue_time <=` 固定 `knowledge_as_of`；
 2. `load_frame()` 必须返回 `StandardDataFrame`，其 record 与被请求记录逐字段
    相等、generation 与固定时钟快照相等；Dataset 必须具有 manifest 声明变量、
    一致的 route/type/issue/valid attrs 和非空有效内容，GeoJSON 必须是
@@ -332,12 +353,13 @@ source snapshot 或 raw payload/sidecar。缺少该能力、抛错、返回不�
 
 - 两个 `route_id` 同时预取不串帧；
 - 同时次 revision 选择符合上述规则；
-- 所有帧 `issue_time <= as_of_time`；
+- 所有帧 `issue_time <= knowledge_as_of`；
 - 每个必需层分别检查 `meets_minimum_horizon`、
   `covers_requested_window`、`provenance_complete` 和 `complete`；不混淆最低线与目标窗；
 - 时间帧 `source_snapshot_ids` 非空且与输入档案一致；
-- `PreparedWindow.as_of_time` 与冻结时钟一致，`DatasetBundle` 通过 Schema，
-  其 records 与实际选中帧一一对应；
+- 因果模式下 `PreparedWindow.as_of_time` 与冻结模拟时钟一致；事后模式下它与显式
+  `knowledge_as_of` 一致；`DatasetBundle` 通过 Schema、A 语义校验和共享包独立重算，
+  其 records 与实际选中帧一一对应，所有请求类型的 coverage/provenance 均完整；
 - seek/tick 竞态不会返回混合时钟窗口；
 - 来源插件无法注入未来、错 route/type、错 record/generation 或错 payload 类型；
 - B 不原地修改 A payload；

@@ -98,6 +98,7 @@ _DEFAULT_INTERVAL_HOURS: dict[str, float | None] = {
     "sea_ice_drift": 24.0,
     "sea_ice_thickness": 24.0,
     "bathymetry": None,
+    "land_sea_mask": None,
     "long_term_restricted_area": None,
 }
 _NO_INTERVAL_OVERRIDE = object()
@@ -118,12 +119,16 @@ class WorkPackageA:
         self.cache = cache
         self.events = event_bus or EventBus()
         self.history_hours = history_hours
+        self._knowledge_generation = clock.generation_id
+        self._knowledge_as_of: datetime | None = None
         self._unsubscribe = clock.subscribe_seek(self._on_seek)
 
     def close(self) -> None:
         self._unsubscribe()
 
     def _on_seek(self, snapshot: ClockSnapshot) -> None:
+        self._knowledge_generation = snapshot.generation_id
+        self._knowledge_as_of = None
         self.cache.reset_generation(
             snapshot.generation_id,
             simulation_time=snapshot.current_time,
@@ -154,9 +159,21 @@ class WorkPackageA:
         data_types: list[str] | tuple[str, ...],
         horizon_hours: int,
         snapshot: ClockSnapshot,
+        knowledge_as_of: datetime | None = None,
     ) -> list[StandardDataFrame]:
         """Load only records knowable at one immutable clock snapshot."""
 
+        availability_time = ensure_utc(
+            knowledge_as_of or snapshot.current_time,
+            field="knowledge_as_of",
+        )
+        if self._knowledge_generation != snapshot.generation_id:
+            raise StaleGenerationError("知识截止时刻与当前模拟代次不一致")
+        if self._knowledge_as_of is not None and availability_time < self._knowledge_as_of:
+            raise FutureInformationError(
+                "同一模拟代次不得将 knowledge_as_of 倒退；请先 seek 生成新代次"
+            )
+        self._knowledge_as_of = availability_time
         self.cache.evict_expired_events(snapshot.current_time)
         start = snapshot.current_time - timedelta(hours=self.history_hours)
         end = snapshot.current_time + timedelta(hours=horizon_hours)
@@ -168,7 +185,7 @@ class WorkPackageA:
                     start,
                     end,
                     route_id=route_id,
-                    as_of=snapshot.current_time,
+                    as_of=availability_time,
                 )
             )
             records: list[ManifestRecord] = []
@@ -179,7 +196,7 @@ class WorkPackageA:
                             candidate,
                             route_id=route_id,
                             data_type=data_type,
-                            as_of=snapshot.current_time,
+                            as_of=availability_time,
                         )
                     )
                 except Exception as exc:
@@ -194,7 +211,7 @@ class WorkPackageA:
                 data_type,
                 snapshot.current_time,
                 route_id=route_id,
-                as_of=snapshot.current_time,
+                as_of=availability_time,
             )
             if latest is not None:
                 try:
@@ -202,7 +219,7 @@ class WorkPackageA:
                         latest,
                         route_id=route_id,
                         data_type=data_type,
-                        as_of=snapshot.current_time,
+                        as_of=availability_time,
                     )
                 except Exception as exc:
                     self._publish_load_failure(
@@ -222,7 +239,7 @@ class WorkPackageA:
                     data_type,
                     end,
                     route_id=route_id,
-                    as_of=snapshot.current_time,
+                    as_of=availability_time,
                 )
             except Exception as exc:
                 self._publish_load_failure(
@@ -239,7 +256,7 @@ class WorkPackageA:
                             upper,
                             route_id=route_id,
                             data_type=data_type,
-                            as_of=snapshot.current_time,
+                            as_of=availability_time,
                         )
                     except Exception as exc:
                         self._publish_load_failure(
@@ -271,7 +288,7 @@ class WorkPackageA:
                     frame = self.source.load_frame(
                         record,
                         generation_id=snapshot.generation_id,
-                        as_of=snapshot.current_time,
+                        as_of=availability_time,
                     )
                     frame = _validated_source_frame(
                         frame,
@@ -279,9 +296,12 @@ class WorkPackageA:
                         route_id=route_id,
                         data_type=data_type,
                         snapshot=snapshot,
+                        knowledge_as_of=availability_time,
                     )
                     selected = self.cache.put(
-                        frame, simulation_time=snapshot.current_time
+                        frame,
+                        simulation_time=snapshot.current_time,
+                        knowledge_as_of=availability_time,
                     )
                 except Exception as exc:
                     self.events.publish(
@@ -363,6 +383,7 @@ class WorkPackageA:
         target_horizon_hours: int = 156,
         minimum_complete_horizon_hours: int = 132,
         expected_interval_hours: Mapping[str, float | None] | None = None,
+        knowledge_as_of: datetime | None = None,
     ) -> PreparedWindow:
         requested_types = tuple(dict.fromkeys(data_types))
         if not requested_types:
@@ -375,6 +396,10 @@ class WorkPackageA:
                 raise ValueError(f"{field} 必须是正整数")
         snapshot = self.clock.snapshot()
         start = ensure_utc(start_time or snapshot.current_time, field="start_time")
+        availability_time = ensure_utc(
+            knowledge_as_of or snapshot.current_time,
+            field="knowledge_as_of",
+        )
         if start != snapshot.current_time:
             raise ValueError("prepare_window_for_b 当前要求 start_time 等于模拟时钟")
         if minimum_complete_horizon_hours > target_horizon_hours:
@@ -384,6 +409,7 @@ class WorkPackageA:
             data_types=requested_types,
             horizon_hours=target_horizon_hours,
             snapshot=snapshot,
+            knowledge_as_of=availability_time,
         )
         requested_end = start + timedelta(hours=target_horizon_hours)
         minimum_end = start + timedelta(hours=minimum_complete_horizon_hours)
@@ -406,6 +432,7 @@ class WorkPackageA:
                 )
         frames_by_type: dict[str, tuple[StandardDataFrame, ...]] = {}
         reports: dict[str, CoverageReport] = {}
+        resolved_intervals: dict[str, float | None] = {}
         verified_provenance_ids: dict[str, str] = {}
         for data_type in requested_types:
             cached_frames = tuple(
@@ -421,6 +448,7 @@ class WorkPackageA:
                 frames=cached_frames,
                 override=interval_overrides.get(data_type, _NO_INTERVAL_OVERRIDE),
             )
+            resolved_intervals[data_type] = interval
             frames = _select_window_support_frames(
                 cached_frames,
                 start=start,
@@ -459,18 +487,19 @@ class WorkPackageA:
         )
         dataset_bundle = DatasetBundle.create(
             corridor_id=route_id,
-            as_of_time=snapshot.current_time,
+            as_of_time=availability_time,
             requested_start=start,
             requested_end=requested_end,
             minimum_required_end=minimum_end,
             requested_data_types=requested_types,
             records=selected_records,
             verified_provenance_ids=verified_provenance_ids,
+            expected_interval_hours=resolved_intervals,
         )
         return PreparedWindow(
             route_id=route_id,
             generation_id=snapshot.generation_id,
-            as_of_time=snapshot.current_time,
+            as_of_time=availability_time,
             frames=MappingProxyType(frames_by_type),
             coverage=MappingProxyType(reports),
             dataset_bundle=dataset_bundle,
@@ -484,6 +513,9 @@ class WorkPackageA:
             "running": snapshot.running,
             "speed": snapshot.speed,
             "generation_id": snapshot.generation_id,
+            "knowledge_as_of": (
+                self._knowledge_as_of.isoformat() if self._knowledge_as_of else None
+            ),
             "cache": self.cache.stats(),
             "categories": [category.value for category in DataCategory],
         }
@@ -528,7 +560,7 @@ def _coverage_report(
     times = [frame.record.valid_time for frame in frames]
     missing: list[tuple[datetime, datetime]] = []
     if expected_interval_hours is not None:
-        tolerance = timedelta(hours=expected_interval_hours * 1.5)
+        tolerance = timedelta(hours=expected_interval_hours)
         for lower, upper in pairwise(times):
             if upper - lower > tolerance and lower < requested_end and upper > start:
                 missing.append((lower, upper))
@@ -681,6 +713,7 @@ def _validated_source_frame(
     route_id: str,
     data_type: str,
     snapshot: ClockSnapshot,
+    knowledge_as_of: datetime | None = None,
 ) -> StandardDataFrame:
     """Validate a plugin-loaded frame before it can cross into the AB cache."""
 
@@ -693,7 +726,7 @@ def _validated_source_frame(
         candidate.record,
         route_id=route_id,
         data_type=data_type,
-        as_of=snapshot.current_time,
+        as_of=knowledge_as_of or snapshot.current_time,
     )
     if candidate.record != requested_record:
         raise DataValidationError(

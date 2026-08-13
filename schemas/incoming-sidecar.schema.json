@@ -21,7 +21,8 @@
       "enum": [
         "sea_ice_concentration", "sea_ice_type", "sea_ice_edge", "sea_ice_drift",
         "sea_ice_thickness", "wave", "ocean_current", "water_level", "wind_field",
-        "temperature", "visibility", "bathymetry", "long_term_restricted_area"
+        "temperature", "visibility", "bathymetry", "land_sea_mask",
+        "long_term_restricted_area"
       ]
     },
     "route_id": {

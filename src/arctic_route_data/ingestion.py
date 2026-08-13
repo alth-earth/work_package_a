@@ -684,20 +684,41 @@ def _constraint_summary(geojson: dict[str, Any]) -> dict[str, Any]:
     allowed_effects = {"hard", "soft", "information"}
     counts = {effect: 0 for effect in (*sorted(allowed_effects), "unknown")}
     missing_authority = 0
+    missing_effective_interval = 0
+    defaulted_to_information = 0
+    category_counts: dict[str, int] = {}
     for feature in geojson.get("features", []):
         properties = feature.get("properties", {}) if isinstance(feature, dict) else {}
         if not isinstance(properties, dict):
             properties = {}
-        effect = str(properties.get("navigation_effect", "unknown")).casefold()
+        raw_effect = properties.get("navigation_effect")
+        if raw_effect is None or not str(raw_effect).strip():
+            effect = "information"
+            defaulted_to_information += 1
+        else:
+            effect = str(raw_effect).casefold()
         counts[effect if effect in allowed_effects else "unknown"] += 1
         if not str(properties.get("authority", "")).strip():
             missing_authority += 1
+        if not str(properties.get("effective_from", "")).strip() and not str(
+            properties.get("effective_to", "")
+        ).strip():
+            missing_effective_interval += 1
+        category = str(properties.get("restriction_category", "unknown")).strip() or "unknown"
+        category_counts[category] = category_counts.get(category, 0) + 1
     return {
         "navigation_effect_counts": counts,
         "unknown_navigation_effect": counts["unknown"],
+        "defaulted_to_information": defaulted_to_information,
+        "restriction_category_counts": dict(sorted(category_counts.items())),
         "missing_authority": missing_authority,
+        "missing_effective_interval": missing_effective_interval,
+        "default_navigation_effect": "information",
+        "automatic_hard_mask_allowed": False,
         "policy_note": (
-            "A 只发布来源分类；B/C 必须由场景政策决定 hard/soft，禁止按图层名称自动硬屏蔽"
+            "A 保留保护区、军事区、规划区等来源类别/authority/effective interval；"
+            "未声明法律效果时默认 information。B/C 必须由场景政策决定 hard/soft，"
+            "禁止按图层名称自动硬屏蔽"
         ),
     }
 

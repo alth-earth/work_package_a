@@ -16,10 +16,10 @@ default_speed = 360.0
 
 [corridors.offshore_murmansk_to_offshore_dikson]
 bbox = [30.0, 67.5, 85.0, 75.0]
-start = [33.05, 69.45]
-destination = [80.55, 73.75]
+start = [33.60, 69.15]
+destination = [80.40, 73.55]
 
-[corridors.tromso_to_svalbard]
+[corridors.tromso_to_isfjorden_outer]
 bbox = [10.0, 68.5, 22.0, 79.5]
-start = [18.95, 69.65]
-destination = [15.63, 78.22]
+start = [19.00, 69.75]
+destination = [13.00, 78.15]

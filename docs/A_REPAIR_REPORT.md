@@ -1,5 +1,9 @@
 # 工作包 A 0.3.0 大修与 0.3.1 证据链加固报告
 
+> 本文是 2026-08-11 的历史验收报告，其中“当前缺项”和固定 132/156 h 仅描述
+> 0.3.1。当期结论不应覆盖 0.4.0；当前状态见
+> [README](../README.md) 与 [场景/14 类说明](SCENARIOS_AND_SOURCES.md)。
+
 日期：2026-08-11  
 范围：`/root/my_project/work_package_a`  
 结论：A 已从“旧脚本兼容框架”提升为可真实采集 GFS 完整未来窗、可审计归档、可按
@@ -158,16 +162,17 @@ A 校验 GeoJSON 和来源分类，但固定 `automatic_hard_mask_allowed=false`
 ### 3.8 精确 AB bundle 与 cadence
 
 - `PreparedWindow` 现在显式返回冻结的 `as_of_time`；
-- 新增 `a.dataset-bundle.v1`，对 corridor、as-of、请求/最低时域、请求类型和
+- 0.3.1 新增 `a.dataset-bundle.v1`；0.4.0 已升级正式出口为
+  `a.dataset-bundle.v2`，对 corridor、as-of、请求/最低时域、请求类型和
   所有实际选中记录的时间、版本、质量、checksum、source snapshot 做确定性
-  SHA-256；
+  SHA-256，并逐类型绑定 records/provenance digest、cadence、缺口和全窗证明；
 - 单个 `source_snapshot_id` 只代表源产品/模型周期及裁剪选择，相同
   GFS cycle+bbox+types 的不同长度采集可复用该 ID；精确执行和多源 B/C 联调必须
   保留 `bundle_id + bundle_digest`；
 - `replay` 输出 coverage、选中 IDs 和 bundle，可用 `--bundle-output` 原子保存；
   不完整窗默认非零退出且不落 bundle，`--summary-only` 只精简 stdout；
-- `DatasetBundle.from_dict()` 会复核 record count、规范排序、来源集合和 digest，
-  防止下游只看 Schema 形状；
+- `DatasetBundle.from_dict()` 会复核 record count、规范排序、来源集合、coverage 和
+  digest；共享包还会独立重算。v1 只读，不能创建正式 RunContext；
 - 原生 GFS 记录声明 3 h，Copernicus wave 声明 3 h，当前 Arctic
   current/water/ice 原生产品声明 1 h。旧记录才使用类型后备值，冲突声明
   拒绝隐式选择。
@@ -339,7 +344,7 @@ B 现在可以不等“所有数据源完美”就继续开发：
 
 - 使用 A 已保留的真实 GFS + Copernicus 9 类完整窗；
 - 通过 `PreparedWindow` 得到快照一致的来源集、冻结 `as_of_time`、覆盖报告和
-  精确 `DatasetBundle.v1`；
+  精确 `DatasetBundle.v2`（旧实源基线 v1 仅作回归，不得直接创建正式 RunContext）；
 - 分别根据 minimum/full/provenance 判定继续、降级或拒绝，不再仅看一个含混
   的 `complete`；
 - 按 `record.route_id == scenario.corridor_id` 校验；

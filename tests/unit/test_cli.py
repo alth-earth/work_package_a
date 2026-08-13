@@ -1,11 +1,13 @@
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import arctic_route_data.cli as cli_module
 from arctic_route_data.cli import main
+from arctic_route_data.shared_context import load_shared_scenario_request
 
 
 @pytest.mark.parametrize("corridor_flag", ["--corridor", "--scenario"])
@@ -30,6 +32,133 @@ def test_acquire_cli_rejects_source_type_mismatch_before_network(
     assert exc_info.value.code == 2
 
 
+def test_historical_window_requires_explicit_start(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "acquire-window",
+                "--corridor",
+                "tromso_to_svalbard",
+                "--mode",
+                "retrospective_best_estimate",
+            ]
+        )
+    assert exc_info.value.code == 2
+    assert "必须显式指定 --start" in capsys.readouterr().err
+
+def test_shared_scenario_adapter_uses_corridor_as_manifest_route_id(capsys):
+    contracts_root = "/root/my_project/arctic_route_contracts/configs"
+    if not Path(contracts_root).is_dir():
+        pytest.skip("shared contracts checkout is unavailable")
+
+    assert (
+        main(
+            [
+                "shared-scenario",
+                "--contracts-config-root",
+                contracts_root,
+                "--scenario",
+                "tromso_isfjorden_july_2026_retrospective_v1",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["corridor_id"] == payload["manifest_route_id"]
+    assert payload["corridor_id"] == "tromso_to_isfjorden_outer"
+    assert payload["horizon_hours"] == 96
+    assert payload["acquisition_mode"] == "retrospective_best_estimate"
+
+
+def test_frozen_shared_scenario_can_select_horizon_from_candidate_route(capsys):
+    contracts_root = "/root/my_project/arctic_route_contracts/configs"
+    if not Path(contracts_root).is_dir():
+        pytest.skip("shared contracts checkout is unavailable")
+
+    assert (
+        main(
+            [
+                "shared-scenario",
+                "--contracts-config-root",
+                contracts_root,
+                "--scenario",
+                "tromso_isfjorden_frozen_forecast_template_v1",
+                "--simulation-start",
+                "2026-08-12T00:00:00Z",
+                "--candidate-route-distance-nm",
+                "1000",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["horizon_hours"] == 120
+    assert payload["scenario_id"].endswith("_h120_v1")
+    assert payload["end"] == "2026-08-17T00:00:00+00:00"
+
+
+def test_frozen_shared_scenario_rejects_candidate_beyond_formal_cap():
+    contracts_root = "/root/my_project/arctic_route_contracts/configs"
+    if not Path(contracts_root).is_dir():
+        pytest.skip("shared contracts checkout is unavailable")
+
+    with pytest.raises(ValueError, match="forecast_coverage_insufficient"):
+        load_shared_scenario_request(
+            scenario_id="murmansk_dikson_frozen_forecast_template_v1",
+            config_root=contracts_root,
+            simulation_start=datetime(2026, 8, 12, tzinfo=UTC),
+            candidate_route_distance_nm=3000,
+        )
+
+
+def test_acquire_window_can_take_all_time_and_identity_from_shared_scenario(
+    tmp_path, monkeypatch, capsys
+):
+    contracts_root = "/root/my_project/arctic_route_contracts/configs"
+    if not Path(contracts_root).is_dir():
+        pytest.skip("shared contracts checkout is unavailable")
+    captured = {}
+
+    def acquire(self, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            source="fixture",
+            source_snapshot_ids=("fixture-snapshot",),
+            records=(),
+            warnings=(),
+        )
+
+    monkeypatch.setattr(cli_module.NativeForecastAcquirer, "acquire_gfs", acquire)
+
+    assert (
+        main(
+            [
+                "acquire-window",
+                "--data-root",
+                str(tmp_path / "data"),
+                "--shared-scenario",
+                "tromso_isfjorden_july_2026_retrospective_v1",
+                "--contracts-config-root",
+                contracts_root,
+                "--sources",
+                "gfs",
+                "--types",
+                "wind_field",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert captured["route_id"] == "tromso_to_isfjorden_outer"
+    assert captured["as_of"] == datetime(2026, 7, 15, tzinfo=UTC)
+    assert captured["horizon_hours"] == 96
+    assert captured["mode"].value == "retrospective_best_estimate"
+    assert payload["shared_scenario_id"] == (
+        "tromso_isfjorden_july_2026_retrospective_v1"
+    )
+
+
 def test_replay_outputs_coverage_and_atomically_persists_bundle(
     tmp_path, monkeypatch, capsys
 ):
@@ -44,7 +173,7 @@ def test_replay_outputs_coverage_and_atomically_persists_bundle(
     class Bundle:
         def to_dict(self):
             return {
-                "schema_version": "a.dataset-bundle.v1",
+                "schema_version": "a.dataset-bundle.v2",
                 "bundle_id": "a-bundle-" + "a" * 24,
                 "records": [{"data_id": "frame-a"}],
             }
@@ -94,10 +223,85 @@ def test_replay_outputs_coverage_and_atomically_persists_bundle(
     assert payload["bundle_persisted"] is True
     assert payload["selected_record_counts"] == {"wave": 0}
     assert "records" not in payload["dataset_bundle"]
-    assert persisted["schema_version"] == "a.dataset-bundle.v1"
+    assert persisted["schema_version"] == "a.dataset-bundle.v2"
     assert persisted["records"] == [{"data_id": "frame-a"}]
     assert captured["target_horizon_hours"] == 6
     assert captured["minimum_complete_horizon_hours"] == 6
+    assert captured["knowledge_as_of"] == datetime(2026, 8, 11, 15, tzinfo=UTC)
+    assert payload["replay_mode"] == "causal"
+
+
+def test_retrospective_replay_requires_and_propagates_explicit_knowledge_cutoff(
+    tmp_path, monkeypatch, capsys
+):
+    captured = {}
+
+    class Report:
+        complete = False
+
+        def to_dict(self):
+            return {"complete": False}
+
+    class Bundle:
+        def to_dict(self):
+            return {"schema_version": "a.dataset-bundle.v1", "records": []}
+
+    def prepare(self, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            route_id="route-a",
+            as_of_time=kwargs["knowledge_as_of"],
+            generation_id=0,
+            coverage={"wave": Report()},
+            frames={"wave": ()},
+            dataset_bundle=Bundle(),
+        )
+
+    monkeypatch.setattr(cli_module.WorkPackageA, "prepare_window_for_b", prepare)
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "replay",
+                "--data-root",
+                str(tmp_path / "data"),
+                "--route-id",
+                "route-a",
+                "--at",
+                "2026-07-15T00:00:00Z",
+                "--mode",
+                "retrospective_best_estimate",
+                "--types",
+                "wave",
+            ]
+        )
+    assert exc_info.value.code == 2
+    assert "--knowledge-as-of" in capsys.readouterr().err
+
+    assert (
+        main(
+            [
+                "replay",
+                "--data-root",
+                str(tmp_path / "data"),
+                "--route-id",
+                "route-a",
+                "--at",
+                "2026-07-15T00:00:00Z",
+                "--mode",
+                "retrospective_best_estimate",
+                "--knowledge-as-of",
+                "2026-08-12T00:00:00Z",
+                "--types",
+                "wave",
+                "--allow-incomplete",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert captured["knowledge_as_of"] == datetime(2026, 8, 12, tzinfo=UTC)
+    assert payload["simulation_time"] == "2026-07-15T00:00:00+00:00"
+    assert payload["knowledge_as_of"] == "2026-08-12T00:00:00+00:00"
 
 
 def test_replay_does_not_persist_incomplete_bundle_without_opt_in(

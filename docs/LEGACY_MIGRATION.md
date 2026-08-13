@@ -2,22 +2,24 @@
 
 ## 1. 先看结论
 
-交付包中的 13 个脚本是兼容输入，不是当前完整预测窗的正式实现：
+交付包中的 13 个环境脚本是兼容输入，不是当前完整预测窗的正式实现；另有船舶
+CSV，应迁移到共享 `VesselProfile`，不能作为 A 环境类型：
 
 - 旧 GFS 风/温度/能见度通常固定取 `f000`；
 - 多数旧 Copernicus/海冰脚本取当前向过去的少量帧；
-- 它们不能证明从模拟时刻向未来覆盖 132/156 h；
+- 它们不能证明覆盖任一共享 Scenario 的完整动态航程窗；
 - 代码仍在用户 ZIP 中，不是本仓库自包含 source adapter；运行必须显式给
   `--legacy-root`；
 - A 的 native GFS 与 Copernicus 已在 `tromso_to_svalbard` 真实跑通 168 h；
   Copernicus 6 类 902 条、GFS 3 类 180 条，联合 bundle 1001 条且 9/9 complete。
   这只证明该走廊/时域，不能据此宣称其他走廊或长期服务已完成。
 
-项目内原生采集当前仍不包含 `sea_ice_type`、`sea_ice_edge`、
-`bathymetry`、`long_term_restricted_area`。这四类通过本文的 legacy/显式 ingest
-接入时，必须继续保留证据和缺口，不能写成 native 完整未来窗。
+0.4.0 已新增 neXtSIM 冰型、15% 阈值冰缘、GEBCO 水深/陆海 mask 和分类保真的
+EMODnet 限制区入口。legacy 入口仅用于重放/对照，不能替代新原生来源，也不能与
+0.3.1 的旧 9 类 bundle 静默拼接。
 
-不要因为 registry 有 13 项就写成“13 类实时预测均已完成”。
+不要因为 registry 有 14 类就写成“14 类实时预测长窗均已完成”；完整性必须按具体
+Scenario 的 bundle/coverage/doctor 判断。
 
 ## 2. 入口映射
 
@@ -41,8 +43,10 @@
 
 | 目标 | 应使用 |
 |---|---|
-| GFS 风/温度/能见度 156 h | `arctic-data acquire-forecast --sources gfs` |
+| GFS 显式历史/未来窗 | `arctic-data acquire-forecast --sources gfs` + shared scenario 或 start/end/mode |
 | Copernicus 波浪/流/水位/海冰未来窗 | `acquire-forecast --sources copernicus`，提供账户并做磁盘预算 |
+| 水深与正式陆海分类 | `acquire-forecast --sources gebco` |
+| 分类保真的限制区证据 | `acquire-forecast --sources emodnet` |
 | 重放交付包已有文件 | `legacy-run` 或显式 `ingest` |
 | 验证旧函数仍可调用 | `legacy-run`，但验收覆盖而不是只看函数返回成功 |
 | 新生产来源 | 实现项目内 `DataSource/AcquisitionPublisher` 适配器，不继续增加不可审计脚本 |
@@ -117,9 +121,10 @@ northward_sea_ice_velocity
 
 ## 8. `source_valid_mask` 不是 legacy 自动掩膜
 
-0.3.1 的原生 Copernicus 在时间拆帧前，根据完整请求中必需源变量是否曾出现
-finite 值派生布尔 `source_valid_mask`，用于分离结构无效域和有效域内残余缺测。
-它明确不包含导航、陆海分类或法律语义。
+0.4.0 的新 `a.source-valid-mask.v2` 在时间拆帧前，要求完整请求中所有必需源变量
+均曾出现 finite 值，再派生布尔 `source_valid_mask`。0.3.1 v1 的“任一变量”语义
+只为历史兼容。两者都仅用于分离结构无效域和有效域内残余缺测，明确不包含导航、
+陆海分类或法律语义；正式 `land_sea_mask` 是另一数据类型。
 
 legacy/普通 direct 数据即使复制全部 attrs 也不能自报该语义；必须绑定归档
 Copernicus snapshot 的精确相对路径、SHA-256、dataset ID 和请求时域，否则摄取

@@ -1,6 +1,56 @@
 # 工作包 A 变更记录
 
-本文件由项目原 README 改名而来，用于保留工作包 A 首次完整交付的实现说明。当前项目入口、运行方法和 B/C/D 接手指南请阅读 [README.md](README.md)。
+本文件由项目原 README 改名而来，用于保留工作包 A 首次完整交付的实现说明，现在用于记录变更。当前项目入口、运行方法和 B/C/D 接手指南请阅读 [README.md](README.md)。
+
+## 0.4.0 - 2026-08-12：14 类环境注册、双场景回放与共享运行上下文
+
+### 新增原生来源与明确语义
+
+- 规范注册表由 13 类增至 14 类环境数据；新增正式 `land_sea_mask`。船舶事实迁入
+  独立 `arctic_route_contracts`，不再把旧 ZIP 的“船舶信息”误算为 A 的第 14 类。
+- neXtSIM 未来产品提供冰密集度分量；A 以确定性规则派生
+  `sea_ice_type`，并按 15% 冰密集度阈值派生 `sea_ice_edge`。二者都不是 B 的
+  训练模型，也没有声称完成导航安全标定。
+- 新增 GEBCO 2026 水深和同网格 `land_sea_mask`。水深保持研究静态层和正式接口，
+  当前不自动编译为吃水/净水深硬约束；陆海分类也不等于可通航掩膜。
+- 新增 EMODnet Human Activities WFS 采集器，分别保留海洋保护区、军事区、海洋
+  空间规划和 Natura 2000 的来源类别；法律效果默认为 information，禁止按图层名
+  自动生成 `hard_mask`，所有图层同时为空时拒绝发布。
+- Copernicus ocean current 首选含潮总流产品并严格抽取整点；失败时显式降级到
+  detided 产品。两者互斥，永不相加。
+
+### 显式时间窗、回放和全系统身份
+
+- `acquire-forecast` 必须显式给出共享场景，或给出 corridor、UTC start、end/horizon
+  和 `frozen_forecast|retrospective_best_estimate` 模式；不再隐式下载 latest。
+- 7 月方案固定为“事后最佳估计”，不得称为严格还原当时发布的预报。回放新增独立
+  `knowledge_as_of`：模拟时钟决定放出哪个 valid time，知识截止时间决定允许看见哪些
+  后补归档 revision，二者不再混用。
+- 接入独立 `arctic_route_contracts` 的两条走廊、四个版本化场景、参考船和
+  `run-context.v2`；A 的 `route_id` 继续兼容映射到共享 `corridor_id`。
+- 时域由共享场景显式给出，不固定为 7 天或 9 天。当前 Murmansk–Dikson 默认 168 h、
+  允许 144–216 h；Tromsø–Isfjorden 默认 96 h、允许 72–144 h；超出来源/场景上限
+  报 `forecast_coverage_insufficient`。新增 `recommend-horizon` 和 A 候选距离参数，
+  可把实际候选航线估算物化为带时域的新场景 ID/版本。
+- 正式运行升级为 `a.dataset-bundle.v2`：每种请求类型绑定 records/provenance 摘要、
+  cadence、起点支撑、缺口和完整窗结论；共享包独立重算后才允许生成 RunContext。
+  v1 保留只读迁移能力，不得再创建正式运行。
+- NCEI GFS 历史模式按 6 h 分析时次读取 `.inv` 后仅下载所需 GRIB byte range，
+  保存 inventory、Range 和 checksum 证据，避免个人电脑重复下载完整全球文件。
+
+### 本轮真实源 smoke（不冒充全矩阵长窗验收）
+
+- NCEI 2026-07-15 单周期真实 byte-range 下载、解析和裁剪成功，识别出风、2 m 温度与
+  能见度；实际传输约 0.94 MB。该临时 smoke 未形成正式 manifest 记录。
+- GEBCO 2026 小区域真实下载成功，同时产出 `bathymetry` 与 `land_sea_mask`。
+- EMODnet 四个法律类别真实查询成功；小区域正式发布 2 个保护区要素并保持
+  `automatic_hard_mask_allowed=false`。
+- Copernicus neXtSIM 在 2026-07-15 冰区真实下载成功，`sea_ice_type` 与
+  `sea_ice_edge` 各发布 2 个小时帧；对无冰/无有限分量区域会明确拒绝或结构缺测，
+  不补零伪装。该成功证据来自 `source_valid_mask.v2`/单次下载复用升级前的同日路径；
+  最新路径两次在 Toolbox 打开数据集阶段失败，合同测试已过，仍待源服务恢复后复验。
+- 两条走廊 × 两种场景 × 14 类的完整长窗真实验收仍需按场景重新运行并记录
+  bundle/doctor 证据；本轮 smoke 仅证明新入口可实际访问和发布。
 
 ## 0.3.1 - 2026-08-11：精确数据集身份、覆盖语义与实源证据加固
 

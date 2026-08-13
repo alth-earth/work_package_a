@@ -15,9 +15,17 @@ def test_checked_in_configuration_is_loaded_and_complete():
     assert config.clock.default_speed == 360.0
     assert set(config.corridors) == {
         "offshore_murmansk_to_offshore_dikson",
-        "tromso_to_svalbard",
+        "tromso_to_isfjorden_outer",
     }
-    assert config_to_dict(config)["corridors"]["tromso_to_svalbard"]["bbox"] == [
+    assert config.corridors["offshore_murmansk_to_offshore_dikson"].start == (
+        33.60,
+        69.15,
+    )
+    assert config.corridors["tromso_to_isfjorden_outer"].destination == (
+        13.00,
+        78.15,
+    )
+    assert config_to_dict(config)["corridors"]["tromso_to_isfjorden_outer"]["bbox"] == [
         10.0,
         68.5,
         22.0,
