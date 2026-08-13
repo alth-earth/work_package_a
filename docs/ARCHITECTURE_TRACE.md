@@ -1,7 +1,8 @@
-# 工作包 A 架构追踪与验收口径（v0.4.0）
+# 工作包 A 架构追踪与验收口径（v0.4.1）
 
-本文只追踪 A。共享事实真源在 `arctic_route_contracts`；BC/CD 的合同真源在工作包 C；
-B 的正式开发任务在 `work_package_b_handoff/工作包B-v2正式开发交接书.md`。
+本文只追踪 A。共享事实真源在 `arctic_route_contracts`；正式 B 实现在
+`work_package_b/`；BC/CD 的合同真源在工作包 C。`work_package_b_handoff/` 保留设计约束和
+旧 ZIP 审计，不再代表 B 尚未建立。
 
 ## 1. 场景、采集和时间
 
@@ -68,11 +69,12 @@ B 的正式开发任务在 `work_package_b_handoff/工作包B-v2正式开发交�
 | 双时钟门禁 | cache put 区分 simulation/knowledge；同代次知识不可倒退 | retrospective/seek 回归测试 |
 | 动态目标窗 | 调用方显式 target/minimum；`CoverageReport` 分项 | start/end/gap/static/event 测试 |
 | 完整状态 | `covers_requested_window && provenance_complete` | minimum-only、自报 provenance 拒绝 |
-| 精确 A 输入 | `PreparedWindow + DatasetBundle.v2` | records/provenance/coverage digest、cadence/support/gaps 独立复核；v1 只读 |
+| 精确 A 输入 | `PreparedWindow + DatasetBundle.v2` | records/provenance/coverage digest、cadence/support/gaps 与逐 payload 语义证明独立复核；v1 只读 |
+| 跨进程精确恢复 | `resolve_dataset_bundle_for_b()` | bundle 重验、按 data ID 精确解析、payload/provenance 复核、深快照/attestation、重建身份、generation/time 围栏 |
 | seek/generation | reset generation、旧任务迟到拒绝 | tick/seek 竞态测试 |
 | 内存边界 | static/slow/dynamic/event 分区、lease | limit/lease/expiry 测试 |
 
-`PreparedWindow.as_of_time` 的字段名为 v1 兼容保留；0.4.0 中它表示
+`PreparedWindow.as_of_time` 的字段名为 v1 兼容保留；0.4.1 中它表示
 `knowledge_as_of`。因果模式下等于模拟时钟，事后模式下可以显式更晚。
 
 ## 6. 共享配置和跨包身份
@@ -83,6 +85,7 @@ B 的正式开发任务在 `work_package_b_handoff/工作包B-v2正式开发交�
 | A 映射 | `shared_context.py` 将共享 corridor 映射到 `ManifestRecord.route_id` |
 | 冻结模板 | 必须显式 `simulation_start`，不能 latest |
 | A bundle 绑定运行 | `shared-scenario` 可创建不可覆盖的 `run-context.v2` |
+| 运行态代次/时间 | 当前 clock snapshot 不塞入 RunContext；由编排/B 输入信封显式携带 generation、current simulation time、knowledge cutoff 和完整 bundle 文档 |
 | 摘要分权 | 公共 `config_digest`；B `model_config_digest`；C `planner_config_digest` |
 | 下游围栏 | RiskFrame/RoutePlan v2 传播 run/scenario/corridor/vessel/config/generation |
 
@@ -105,7 +108,11 @@ B 的正式开发任务在 `work_package_b_handoff/工作包B-v2正式开发交�
   合同测试已过，但两次复验在 Toolbox 打开数据集阶段空异常，仍待补实源 smoke；
 - 两条航区 × retrospective/frozen × 14 类仍未达到第 4 级，禁止把多个 smoke 拼成
   正式完整 bundle；
-- B 尚无正式实现，因此 A→B→C 真实端到端验收未完成。
+- B `0.1.0` 工程基线已用正式公共接口完成 12 类、96/168/216 h 夹具验收，并有
+  A 归档发布→重启→exact resolver→B 的跨进程篡改负例；这些属于第 2 级工程证据，
+  不是指定场景真实源验收。
+- 当前真实长窗仍是历史 v1/9 类/旧 corridor，无法创建正式 RunContext；因此
+  A→B→C 真实端到端验收仍未完成。
 
 ## 8. A/B/C/D 边界
 
@@ -119,4 +126,5 @@ A 只发布环境标准帧、来源证据、DatasetBundle，并适配共享 RunC
 - `arctic_route_contracts/schemas/run-context-v2.schema.json`
 - `work_package_c/docs/BC_CONTRACT.md`
 - `work_package_c/docs/CD_CONTRACT.md`
+- `work_package_b/README.md`
 - `work_package_b_handoff/工作包B-v2正式开发交接书.md`

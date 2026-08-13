@@ -2,7 +2,7 @@
 
 工作包 A 是全系统唯一的环境数据入口：从工作包 A 已配置的网站/API 或历史文件取得数据，保存来源证据，拆成单时次标准帧，规范化并质检，然后按模拟时钟安全地交给 B。
 
-当前版本为 `0.4.0`。这是科研演示数据管线，不是航行安全系统。
+当前版本为 `0.4.1`。这是科研演示数据管线，不是航行安全系统。
 
 第一次接手建议依次阅读：
 
@@ -25,7 +25,7 @@
 | 共享场景/船型/运行身份 | 已实现 | 接入 `arctic_route_contracts`，可由精确 A bundle 创建 `RunContext.v2` |
 | NetCDF/GeoJSON 摄取 | 已实现 | 必须携带可审计 `issue_time_evidence`；非法单位、坐标、几何或内容会拒绝/降级 |
 | raw/ready/manifest | 已实现 | 内容寻址、SHA-256、不可变 revision、恢复和 doctor 检查 |
-| AB 缓存/回放 | 已实现 | 航线隔离、版本选择、代次隔离、严格窗口覆盖报告、防未来信息泄漏、可独立复核的 `DatasetBundle.v2` |
+| AB 缓存/回放 | 已实现 | 航线隔离、版本选择、代次隔离、严格窗口覆盖报告、防未来信息泄漏、可独立复核的 `DatasetBundle.v2` 与逐 payload 语义证明 |
 | 统一目标风险网格 | 未实现 | A 保留地理网格身份；B 负责按共享场景网格重采样和融合 |
 | 风险、船速、规划、展示 | 不属于 A | 分别由 B、C、D 完成 |
 
@@ -328,6 +328,7 @@ for data_type, report in prepared.coverage.items():
 assert prepared.as_of_time == knowledge_as_of
 print(prepared.dataset_bundle.bundle_id)
 print(prepared.dataset_bundle.bundle_digest)
+print(prepared.payload_attestations)
 ```
 
 `PreparedWindow.dataset_bundle` 是 `a.dataset-bundle.v2`：它对 corridor、as-of、请求/
@@ -342,6 +343,30 @@ B/C 应保留 `bundle_id + bundle_digest`。v2 还逐类型绑定 records/proven
 形状校验。
 `replay` 默认在任一必需层 `complete=false` 时返回非零且不写 bundle；只有诊断时才
 显式使用 `--allow-incomplete`，但不完整 bundle 即使在诊断模式也不会持久化。
+
+跨进程或重启后，B 不扫描 A 的 SQLite/ready/raw。由编排层重建相同模拟时钟并显式
+提供运行代次和知识截止时间，再调用：
+
+```python
+restored = a.resolve_dataset_bundle_for_b(
+    persisted_bundle_mapping,
+    generation_id=b_input.generation_id,
+    knowledge_as_of=b_input.knowledge_as_of,
+)
+```
+
+该公共入口只接受逐类型 `complete=true` 的 `a.dataset-bundle.v2`，重验规范 JSON、
+bundle ID/digest、正式 cadence、当前 simulation/generation、每条精确 manifest revision、
+ready payload checksum 和绑定的 raw/source-snapshot provenance；随后从实际归档记录重建
+bundle 并要求完全相等。`RunContext.v2` 不包含 `generation_id` 或
+`knowledge_as_of`；这些运行态字段必须由编排/B 输入信封显式携带。v1 继续可审计读取，
+但不能通过这个正式恢复入口。
+
+`PreparedWindow.frames` 是交给消费者的深拷贝快照；
+`PreparedWindow.payload_attestations[data_id]` 是 A 对完整 manifest record 与规范化 payload
+（维度、坐标、变量、dtype、shape、值和 attrs）计算的 SHA-256。B 在建立输入信封和真正
+build 前都会用公共 `semantic_payload_digest()` 独立复核并再次深拷贝，因此调用者持有的
+xarray 别名在 A 校验后发生变化时，不能继续沿用旧 checksum/attestation 生成正式风险帧。
 
 精确缓存、revision、租用和跳转语义见 [AB_INTERFACE.md](docs/AB_INTERFACE.md)。
 
@@ -471,7 +496,9 @@ ID/digest。
 - `source_valid_mask` 不包含导航或法律语义；正式 `land_sea_mask` 已新增，但
   通航性和限制区 hard/soft 政策仍属于 B/C；
 - 水深保留为研究静态层；尚未结合可信吃水、潮位、净空余量与不确定性形成核心安全约束；
-- B 正式实现尚未交付，因此当前不能完成正式 A→B→C 端到端实源验收。
+- `work_package_b/` 的 `demo_unvalidated` 工程基线及 A→B→C 公共接口夹具链已经交付；
+  但现存真实长窗 bundle 仍是旧 v1、旧走廊且只有 9 类，不能用于正式 RunContext，故
+  A→B→C **实源**端到端验收仍未完成。
 
 完整修复清单、测试证据和保留风险见 [A_REPAIR_REPORT.md](docs/A_REPAIR_REPORT.md)。
 

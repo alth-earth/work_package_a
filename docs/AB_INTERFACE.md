@@ -1,4 +1,4 @@
-# A → B（AB）接口 v0.4.0
+# A → B（AB）接口 v0.4.1
 
 本文是工作包 A 已实现接口的真源。B→C 的正式合同以
 `work_package_c/docs/BC_CONTRACT.md`、C 的 Python 模型和 JSON Schema 为准。
@@ -52,8 +52,9 @@ relative_path, size_bytes, media_type, metadata
 - `content_qc`；
 - 上游 checksum、产品/数据集 ID 和裁剪请求摘要（存在时）。
 
-元数据会深度冻结。xarray 容器按消费者隔离，底层数组只读；B 不得原地修改
-payload，应创建自己的派生 Dataset。
+元数据会深度冻结。`consumer_copy()` 会为 xarray/Mapping payload 创建不共享可写数组的
+深拷贝并把数组设为只读；B 不得原地修改 payload，应创建自己的派生 Dataset。只读位本身
+不是信任边界，正式消费还必须复核下述 payload attestation。
 
 `content_qc.source_valid_mask` 若 `present=true`，只表示原生 Copernicus
 完整请求中派生的源数据空间有效域。新 `a.source-valid-mask.v2` 要求所有必需源变量
@@ -87,9 +88,17 @@ class PreparedWindow:
     generation_id: int
     as_of_time: datetime
     frames: Mapping[str, tuple[StandardDataFrame, ...]]
+    payload_attestations: Mapping[str, str]
     coverage: Mapping[str, CoverageReport]
     dataset_bundle: DatasetBundle
 ```
+
+`payload_attestations` 必须与所有实际 frames 的 `data_id` 一一对应。每个值由公共
+`semantic_payload_digest(record, payload)` 计算，绑定完整 `ManifestRecord.to_dict()` 与
+规范化 payload；xarray 会绑定 dims、coords、data_vars、dtype、shape、值和 attrs，Mapping
+会递归绑定规范值。A 在实时准备和跨进程精确恢复时都先形成消费者私有深快照，再为该快照
+生成证明。B 必须在建立输入信封时独立重算，并在算法读取前再次复核/快照，不能只相信
+record 中的 ready-file checksum 或 NumPy `writeable=False`。
 
 `CoverageReport` 给出：
 
@@ -165,7 +174,41 @@ bundle；正式 RunContext 必须拒绝 v1。
 跨进程消费必须调用 `DatasetBundle.from_dict()` 校验 record count、规范排序、
 来源 ID 集合和 digest；JSON Schema 只能检查形状，不能独自证明内容身份。
 
-这里的 `DatasetBundle.complete` 只证明调用方所请求类型的窗口完整；正式
+### 3.2 持久 bundle 的正式精确恢复
+
+B 跨进程或进程重启后不得扫描 A 的 SQLite、ready、raw 或 source snapshots。编排层先
+以 `DatasetBundle.requested_start` 重建 A 的模拟时钟，并把运行态代次/知识截止写入 B
+输入信封，然后调用公共入口：
+
+```python
+restored = a.resolve_dataset_bundle_for_b(
+    persisted_bundle_mapping,
+    generation_id=b_input.generation_id,
+    knowledge_as_of=b_input.knowledge_as_of,
+)
+```
+
+入口返回与实时路径相同形状的 `PreparedWindow`，并执行以下 fail-closed 检查：
+
+1. 语义解析后必须是所有请求层 `complete=true` 的 `a.dataset-bundle.v2`；v1 仍可用
+   `DatasetBundle.from_dict()` 做历史审计，但不能正式恢复；
+2. 调用方 `knowledge_as_of` 必须精确等于 bundle `as_of_time`，且每条
+   `issue_time <= knowledge_as_of`；
+3. 调用方 `generation_id` 必须是非负整数并等于 A 当前 generation，A 当前
+   simulation time 必须等于 bundle `requested_start`；
+4. A 通过归档源公共能力按 `data_id` 解析精确不可变 revision，不按当前最新版本替换；
+5. manifest 身份与 bundle record 一一对应，payload checksum、raw/source snapshot 和
+   provenance ID 在加载前后重新验证；
+6. 从实际记录、正式 cadence 和验证后的 provenance 重建 bundle，结果必须与持久
+   bundle 完全相等；对交付深快照生成逐 data ID payload attestation；加载期间时钟或
+   generation 变化则整批拒绝并重试。
+
+内置 `LocalArchiveSource` 实现上述能力。普通第三方 `DataSource` 若没有
+`get_record_by_id()` 与 `load_verified_frame()`，仍可用于诊断/实时准备，但不得冒充
+正式跨进程恢复源。
+
+这里的逐类型 `coverage[*].complete` 及汇总 `coverage_complete` 只证明调用方所请求类型
+的窗口完整；正式
 `RunContext.v2` 还会按共享场景画像复核类型集合。当前画像要求 12 类运行层完整：
 风、温度、能见度、波浪、海流、水位、五类海冰层以及 `land_sea_mask`；
 `bathymetry` 和 `long_term_restricted_area` 是可选研究/信息层。两类可选层仍是 A
@@ -201,7 +244,6 @@ a.prefetch(
     route_id=corridor_id,
     data_types=["wind_field"],
     horizon_hours=requested_horizon_hours,
-    knowledge_as_of=knowledge_as_of,
 )
 
 # 模拟时刻及以前的最新有效帧，不会返回最远未来预报
@@ -228,6 +270,9 @@ lower, upper = a.source.get_bracketing(
 ```
 
 `latest_for_b` 和 `latest_forecast_for_b` 不能混用。前者回答“现在/过去最后一帧”，后者才回答“档案中最远预报”。
+公共 `prefetch()` 始终使用当前模拟时刻作为因果知识截止；需要显式
+`knowledge_as_of` 的事后最佳估计只能调用 `prepare_window_for_b()`，不能调用私有
+`_prefetch_at_snapshot()`。
 
 ## 5. revision 与缓存
 
@@ -273,9 +318,11 @@ with cache.lease(frame.record.data_id) as leased:
 5. 旧代次加载在 `cache.put()` 时被拒绝。
 
 B 开始计算时从 `RunContext.v2` 冻结 `(run_id, scenario_id, corridor_id,
-vessel_profile_id, generation_id, config_digest)`，并另外冻结 simulation/knowledge
-时间；发布 RiskFrame 前再次核对。普通 tick 不增加 generation，所以长计算还应比较
-冻结时刻或由编排器取消/重试。
+vessel_profile_id, dataset_bundle_id, dataset_bundle_digest, config_digest)` 和场景起止时间；
+`generation_id`、当前 simulation clock snapshot、`knowledge_as_of` 以及完整 DatasetBundle
+文档不在 RunContext 中，必须由编排/B 输入信封另外显式冻结，并与 RunContext 中的
+bundle ID/digest 交叉校验。发布 RiskFrame 前再次核对全部公共和运行态围栏。普通 tick
+不增加 generation，所以长计算还应比较冻结时刻或由编排器取消/重试。
 
 ## 7. B 的空间/时间处理责任
 
@@ -360,6 +407,9 @@ source snapshot 或 raw payload/sidecar。缺少该能力、抛错、返回不�
 - 因果模式下 `PreparedWindow.as_of_time` 与冻结模拟时钟一致；事后模式下它与显式
   `knowledge_as_of` 一致；`DatasetBundle` 通过 Schema、A 语义校验和共享包独立重算，
   其 records 与实际选中帧一一对应，所有请求类型的 coverage/provenance 均完整；
+- 跨进程/重启恢复不扫描 A 私有存储，按 data ID 取得精确 revision，并重验 payload、
+  provenance、bundle、generation 和 simulation/knowledge 时间围栏；A/B 对每个实际
+  payload 的语义证明一致，恢复后篡改会被拒绝；
 - seek/tick 竞态不会返回混合时钟窗口；
 - 来源插件无法注入未来、错 route/type、错 record/generation 或错 payload 类型；
 - B 不原地修改 A payload；

@@ -12,10 +12,15 @@ from types import MappingProxyType
 import numpy as np
 import xarray as xr
 
-from arctic_route_data.bundle import DatasetBundle, record_provenance_id
+from arctic_route_data.bundle import (
+    DatasetBundle,
+    DatasetBundleRecord,
+    record_provenance_id,
+)
 from arctic_route_data.cache import PartitionedABCache
 from arctic_route_data.clock import ClockSnapshot, SimulationClock
 from arctic_route_data.errors import (
+    DataNotFoundError,
     DataValidationError,
     FutureInformationError,
     StaleGenerationError,
@@ -27,7 +32,12 @@ from arctic_route_data.events import (
     GenerationChangedEvent,
     MissingDataAlert,
 )
-from arctic_route_data.models import DataCategory, ManifestRecord, StandardDataFrame
+from arctic_route_data.models import (
+    DataCategory,
+    ManifestRecord,
+    StandardDataFrame,
+    semantic_payload_digest,
+)
 from arctic_route_data.sources import DataSource
 from arctic_route_data.timeutils import ensure_utc, isoformat_utc
 
@@ -81,6 +91,7 @@ class PreparedWindow:
     generation_id: int
     as_of_time: datetime
     frames: Mapping[str, tuple[StandardDataFrame, ...]]
+    payload_attestations: Mapping[str, str]
     coverage: Mapping[str, CoverageReport]
     dataset_bundle: DatasetBundle
 
@@ -90,13 +101,17 @@ _DEFAULT_INTERVAL_HOURS: dict[str, float | None] = {
     "temperature": 3.0,
     "visibility": 3.0,
     "wave": 3.0,
-    "ocean_current": 6.0,
-    "water_level": 6.0,
-    "sea_ice_concentration": 24.0,
-    "sea_ice_type": 24.0,
-    "sea_ice_edge": 24.0,
-    "sea_ice_drift": 24.0,
-    "sea_ice_thickness": 24.0,
+    # ``prepare_window_for_b`` emits formal v2, so its metadata-free fallback
+    # must itself be accepted by the formal cadence contract. Coarser legacy
+    # products remain readable with an explicit diagnostic cadence, but cannot
+    # silently become a formal v2 window.
+    "ocean_current": 1.0,
+    "water_level": 1.0,
+    "sea_ice_concentration": 1.0,
+    "sea_ice_type": 1.0,
+    "sea_ice_edge": 1.0,
+    "sea_ice_drift": 1.0,
+    "sea_ice_thickness": 1.0,
     "bathymetry": None,
     "land_sea_mask": None,
     "long_term_restricted_area": None,
@@ -467,13 +482,14 @@ class WorkPackageA:
                 expected_interval_hours=interval,
                 verified_provenance_ids=verified_for_type,
             )
+        delivered_frames, payload_attestations = _attest_consumer_frames(frames_by_type)
         final_snapshot = self.clock.snapshot()
         if (
             final_snapshot.current_time != snapshot.current_time
             or final_snapshot.generation_id != snapshot.generation_id
             or any(
                 frame.generation_id != snapshot.generation_id
-                for frames in frames_by_type.values()
+                for frames in delivered_frames.values()
                 for frame in frames
             )
         ):
@@ -483,7 +499,7 @@ class WorkPackageA:
         selected_records = tuple(
             frame.record
             for data_type in requested_types
-            for frame in frames_by_type[data_type]
+            for frame in delivered_frames[data_type]
         )
         dataset_bundle = DatasetBundle.create(
             corridor_id=route_id,
@@ -500,9 +516,186 @@ class WorkPackageA:
             route_id=route_id,
             generation_id=snapshot.generation_id,
             as_of_time=availability_time,
-            frames=MappingProxyType(frames_by_type),
+            frames=delivered_frames,
+            payload_attestations=payload_attestations,
             coverage=MappingProxyType(reports),
             dataset_bundle=dataset_bundle,
+        )
+
+    def resolve_dataset_bundle_for_b(
+        self,
+        bundle: DatasetBundle | Mapping[str, object],
+        *,
+        generation_id: int,
+        knowledge_as_of: datetime,
+    ) -> PreparedWindow:
+        """Restore the exact formal v2 frames bound by a persisted bundle.
+
+        The caller supplies generation and knowledge cutoff from its runtime
+        envelope; neither value is inferred from ``RunContext``. Resolution
+        uses public archive-source capabilities and never asks B to scan A's
+        SQLite, ready or raw directories.
+        """
+
+        if (
+            not isinstance(generation_id, int)
+            or isinstance(generation_id, bool)
+            or generation_id < 0
+        ):
+            raise ValueError("generation_id 必须是非负整数")
+        payload = bundle.to_dict() if isinstance(bundle, DatasetBundle) else bundle
+        if not isinstance(payload, Mapping):
+            raise TypeError("bundle 必须是 DatasetBundle 或 mapping")
+        # Dataclass construction is not a trust boundary. Always round-trip
+        # through the semantic parser, even for an existing DatasetBundle.
+        verified_bundle = DatasetBundle.from_dict(payload)
+        if verified_bundle.schema_version != "a.dataset-bundle.v2":
+            raise DataValidationError(
+                "跨进程正式恢复只接受 a.dataset-bundle.v2；v1 仅供历史读取"
+            )
+        if not verified_bundle.coverage or not all(
+            proof.complete for proof in verified_bundle.coverage
+        ):
+            raise DataValidationError("正式恢复要求 DatasetBundle v2 每个请求层 complete=true")
+
+        cutoff = ensure_utc(knowledge_as_of, field="knowledge_as_of")
+        if cutoff != verified_bundle.as_of_time:
+            raise DataValidationError(
+                "knowledge_as_of 必须与 DatasetBundle.as_of_time 精确一致"
+            )
+        snapshot = self.clock.snapshot()
+        if generation_id != snapshot.generation_id:
+            raise StaleGenerationError(
+                "请求 generation_id 与 A 当前模拟代次不一致："
+                f"{generation_id} != {snapshot.generation_id}"
+            )
+        if snapshot.current_time != verified_bundle.requested_start:
+            raise DataValidationError(
+                "A 当前 simulation_time 必须与 DatasetBundle.requested_start 精确一致"
+            )
+
+        get_record = getattr(self.source, "get_record_by_id", None)
+        load_verified = getattr(self.source, "load_verified_frame", None)
+        if not callable(get_record) or not callable(load_verified):
+            raise DataValidationError(
+                "DataSource 不支持正式 exact-bundle 恢复；"
+                "需要 get_record_by_id/load_verified_frame 公共能力"
+            )
+
+        frames: list[StandardDataFrame] = []
+        actual_records: list[ManifestRecord] = []
+        verified_provenance_ids: dict[str, str] = {}
+        for expected in verified_bundle.records:
+            record = get_record(expected.data_id)
+            if record is None:
+                raise DataNotFoundError(
+                    f"DatasetBundle 引用的精确记录不存在: {expected.data_id}"
+                )
+            record = _validated_source_record(
+                record,
+                route_id=verified_bundle.corridor_id,
+                data_type=expected.data_type,
+                as_of=cutoff,
+            )
+            actual_identity = DatasetBundleRecord(
+                data_id=record.data_id,
+                data_type=record.data_type,
+                issue_time=record.issue_time,
+                valid_time=record.valid_time,
+                source=record.source,
+                version=record.version,
+                quality_flag=record.quality_flag.value,
+                checksum=record.checksum,
+                source_snapshot_id=expected.source_snapshot_id,
+            )
+            if actual_identity != expected:
+                raise DataValidationError(
+                    f"归档记录与 DatasetBundle 身份不一致: {expected.data_id}"
+                )
+            if expected.source_snapshot_id is None:
+                # Complete v2 already forbids this; keep the archive capability
+                # call's expected provenance type explicit and fail closed.
+                raise DataValidationError(
+                    f"正式 DatasetBundle 记录缺少 provenance: {expected.data_id}"
+                )
+            candidate = load_verified(
+                record,
+                generation_id=generation_id,
+                as_of=cutoff,
+                expected_provenance_id=expected.source_snapshot_id,
+            )
+            frame = _validated_source_frame(
+                candidate,
+                requested_record=record,
+                route_id=verified_bundle.corridor_id,
+                data_type=expected.data_type,
+                snapshot=snapshot,
+                knowledge_as_of=cutoff,
+            )
+            frames.append(frame.consumer_copy())
+            actual_records.append(record)
+            verified_provenance_ids[record.data_id] = expected.source_snapshot_id
+
+        intervals = {
+            proof.data_type: proof.expected_interval_hours
+            for proof in verified_bundle.coverage
+        }
+        rebuilt = DatasetBundle.create(
+            corridor_id=verified_bundle.corridor_id,
+            as_of_time=cutoff,
+            requested_start=verified_bundle.requested_start,
+            requested_end=verified_bundle.requested_end,
+            minimum_required_end=verified_bundle.minimum_required_end,
+            requested_data_types=verified_bundle.requested_data_types,
+            records=tuple(actual_records),
+            verified_provenance_ids=verified_provenance_ids,
+            expected_interval_hours=intervals,
+        )
+        if rebuilt.to_dict() != verified_bundle.to_dict():
+            raise DataValidationError(
+                "从归档精确记录重建的 DatasetBundle 与持久身份不一致"
+            )
+
+        frames_by_type = {
+            data_type: tuple(
+                frame for frame in frames if frame.record.data_type == data_type
+            )
+            for data_type in verified_bundle.requested_data_types
+        }
+        reports = {
+            data_type: _coverage_report(
+                data_type=data_type,
+                frames=frames_by_type[data_type],
+                start=verified_bundle.requested_start,
+                requested_end=verified_bundle.requested_end,
+                minimum_end=verified_bundle.minimum_required_end,
+                expected_interval_hours=intervals[data_type],
+                verified_provenance_ids=verified_provenance_ids,
+            )
+            for data_type in verified_bundle.requested_data_types
+        }
+        delivered_frames, payload_attestations = _attest_consumer_frames(frames_by_type)
+        final_snapshot = self.clock.snapshot()
+        if (
+            final_snapshot.current_time != snapshot.current_time
+            or final_snapshot.generation_id != snapshot.generation_id
+            or any(
+                frame.generation_id != generation_id
+                for items in delivered_frames.values()
+                for frame in items
+            )
+        ):
+            raise StaleGenerationError(
+                "exact-bundle 恢复期间模拟时刻或 generation 发生变化；请重试"
+            )
+        return PreparedWindow(
+            route_id=verified_bundle.corridor_id,
+            generation_id=generation_id,
+            as_of_time=cutoff,
+            frames=delivered_frames,
+            payload_attestations=payload_attestations,
+            coverage=MappingProxyType(reports),
+            dataset_bundle=verified_bundle,
         )
 
     def health(self) -> dict[str, object]:
@@ -545,6 +738,34 @@ def _verified_provenance_ids(
         ):
             verified[frame.record.data_id] = provenance_id
     return verified
+
+
+def _attest_consumer_frames(
+    frames_by_type: Mapping[str, tuple[StandardDataFrame, ...]],
+) -> tuple[
+    Mapping[str, tuple[StandardDataFrame, ...]],
+    Mapping[str, str],
+]:
+    """Deep-snapshot frames and bind their actual public payload content."""
+
+    delivered: dict[str, tuple[StandardDataFrame, ...]] = {}
+    attestations: dict[str, str] = {}
+    for data_type, frames in frames_by_type.items():
+        snapshots: list[StandardDataFrame] = []
+        for frame in frames:
+            snapshot = frame.consumer_copy()
+            data_id = snapshot.record.data_id
+            if data_id in attestations:
+                raise DataValidationError(
+                    f"PreparedWindow 包含重复 data_id，无法 attestation: {data_id}"
+                )
+            attestations[data_id] = semantic_payload_digest(
+                snapshot.record,
+                snapshot.payload,
+            )
+            snapshots.append(snapshot)
+        delivered[data_type] = tuple(snapshots)
+    return MappingProxyType(delivered), MappingProxyType(attestations)
 
 
 def _coverage_report(

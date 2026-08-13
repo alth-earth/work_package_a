@@ -2,6 +2,29 @@
 
 本文件由项目原 README 改名而来，用于保留工作包 A 首次完整交付的实现说明，现在用于记录变更。当前项目入口、运行方法和 B/C/D 接手指南请阅读 [README.md](README.md)。
 
+## 0.4.1 - 2026-08-13：B 跨进程精确恢复与正式 cadence 围栏
+
+- 新增公共 `WorkPackageA.resolve_dataset_bundle_for_b()`：重启后可用持久
+  `DatasetBundle.v2 + generation_id + knowledge_as_of` 精确恢复同一组
+  `StandardDataFrame`，B 无需也不得扫描 A 的 SQLite/ready/raw。
+- 内置 `LocalArchiveSource` 新增按 data ID 精确解析 revision 和加锁验证后加载能力；
+  恢复会重验 payload checksum、raw/source snapshot provenance、future issue、当前
+  simulation/generation，并从实际记录重建 bundle 后要求完全一致。
+- A 在创建和解析正式 v2 bundle 时执行与共享合同相同的 cadence 白名单；旧
+  current/water 6 h、ice 24 h 后备仍供 legacy 诊断，但不能再生成共享包随后才拒绝的
+  v2。`a.dataset-bundle.v1` 保持只读兼容。
+- 修正 AB 文档：公共 `prefetch()` 不接收 `knowledge_as_of`；事后模式必须调用
+  `prepare_window_for_b()`。`generation_id`、simulation/knowledge 时间和 bundle 身份由
+  编排/B 输入信封携带，不宣称来自 `RunContext.v2`。
+- `PreparedWindow` 与 `CoverageReport` 加入顶层公共导出；新增正式恢复、篡改拒绝、
+  v1 兼容和 A/shared cadence 对齐测试。
+- `PreparedWindow` 新增逐 data ID 的 `payload_attestations`；公共
+  `semantic_payload_digest()` 绑定完整 record 与规范 payload。消费者副本改为深拷贝，
+  防止浅拷贝共享 NumPy buffer 让验证后的内容在 B build 前被外部别名改写。
+- 当前 `make check`：Ruff、锁文件/同步检查和 CLI help 通过，pytest `169 passed`。
+- `SimulationClock.subscribe_seek()` 返回的清理回调改为幂等，方便 A/B 编排作用域安全地
+  重复释放监听器。
+
 ## 0.4.0 - 2026-08-12：14 类环境注册、双场景回放与共享运行上下文
 
 ### 新增原生来源与明确语义

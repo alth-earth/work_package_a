@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import numpy as np
@@ -5,7 +6,7 @@ import pytest
 import xarray as xr
 
 from arctic_route_data.errors import MetadataValidationError
-from arctic_route_data.models import StandardDataFrame
+from arctic_route_data.models import StandardDataFrame, semantic_payload_digest
 from arctic_route_data.timeutils import parse_utc
 
 
@@ -50,3 +51,36 @@ def test_metadata_and_payload_buffers_are_read_only(make_record):
     consumer = frame.consumer_copy()
     consumer.payload["derived"] = ("x", [5.0, 6.0])
     assert "derived" not in frame.payload
+
+
+def test_consumer_copy_does_not_share_mutable_array_buffers(make_record):
+    record = make_record()
+    frame = StandardDataFrame(
+        record,
+        xr.Dataset({"value": ("x", np.array([1.0, 2.0]))}),
+        0,
+    )
+    consumer = frame.consumer_copy()
+
+    original = frame.payload["value"].values
+    original.flags.writeable = True
+    original[0] = 99.0
+
+    assert consumer.payload["value"].values.tolist() == [1.0, 2.0]
+
+
+def test_semantic_payload_digest_is_copy_stable_and_content_sensitive(make_record):
+    record = make_record(metadata={"source_snapshot_id": "snapshot-a"})
+    dataset = xr.Dataset(
+        {"value": ("x", np.array([1.0, 2.0], dtype=np.float64))},
+        attrs={"crs": "EPSG:4326"},
+    )
+    dataset["value"].attrs["units"] = "m"
+    baseline = semantic_payload_digest(record, dataset)
+
+    assert semantic_payload_digest(record, dataset.copy(deep=True)) == baseline
+
+    changed_payload = dataset.copy(deep=True)
+    changed_payload["value"] = changed_payload["value"] + 1.0
+    assert semantic_payload_digest(record, changed_payload) != baseline
+    assert semantic_payload_digest(replace(record, version="2.0.0"), dataset) != baseline

@@ -1,6 +1,6 @@
 [project]
 name = "arctic-route-data"
-version = "0.4.0"
+version = "0.4.1"
 description = "北极航线工作包 A：采集、预处理、权威时间、逐时次发布、manifest 与 AB 缓存"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"

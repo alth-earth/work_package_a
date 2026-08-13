@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import math
 import re
 from collections.abc import Mapping
@@ -54,6 +56,10 @@ def validate_identifier(value: str, *, field: str) -> str:
 
 
 def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        frozen = value.copy()
+        frozen.flags.writeable = False
+        return frozen
     if isinstance(value, Mapping):
         return MappingProxyType({str(key): _deep_freeze(item) for key, item in value.items()})
     if isinstance(value, list | tuple):
@@ -77,6 +83,145 @@ def _freeze_dataset(dataset: xr.Dataset) -> xr.Dataset:
         if isinstance(values, np.ndarray):
             values.flags.writeable = False
     return dataset
+
+
+def _digest_part(digest: Any, tag: str, value: bytes = b"") -> None:
+    tag_bytes = tag.encode("ascii")
+    digest.update(len(tag_bytes).to_bytes(4, "big"))
+    digest.update(tag_bytes)
+    digest.update(len(value).to_bytes(8, "big"))
+    digest.update(value)
+
+
+def _update_semantic_value(digest: Any, value: Any) -> None:
+    """Hash one value with explicit type and length boundaries."""
+
+    if isinstance(value, np.generic):
+        value = value.item()
+    if value is None:
+        _digest_part(digest, "none")
+    elif isinstance(value, bool):
+        _digest_part(digest, "bool", b"1" if value else b"0")
+    elif isinstance(value, int):
+        _digest_part(digest, "int", str(value).encode("ascii"))
+    elif isinstance(value, float):
+        if math.isnan(value):
+            encoded = b"nan"
+        elif math.isinf(value):
+            encoded = b"+inf" if value > 0 else b"-inf"
+        else:
+            encoded = value.hex().encode("ascii")
+        _digest_part(digest, "float", encoded)
+    elif isinstance(value, str):
+        _digest_part(digest, "str", value.encode("utf-8"))
+    elif isinstance(value, bytes):
+        _digest_part(digest, "bytes", value)
+    elif isinstance(value, datetime):
+        _digest_part(
+            digest,
+            "datetime",
+            ensure_utc(value, field="semantic payload datetime").isoformat().encode("ascii"),
+        )
+    elif isinstance(value, np.ndarray):
+        _update_semantic_array(digest, value)
+    elif isinstance(value, Mapping):
+        _digest_part(digest, "mapping-start", str(len(value)).encode("ascii"))
+        if any(not isinstance(key, str) for key in value):
+            raise MetadataValidationError("semantic payload mapping 的键必须是字符串")
+        for key in sorted(value):
+            _update_semantic_value(digest, key)
+            _update_semantic_value(digest, value[key])
+        _digest_part(digest, "mapping-end")
+    elif isinstance(value, list | tuple):
+        _digest_part(digest, "sequence-start", str(len(value)).encode("ascii"))
+        for item in value:
+            _update_semantic_value(digest, item)
+        _digest_part(digest, "sequence-end")
+    elif isinstance(value, set | frozenset):
+        encoded_items: list[bytes] = []
+        for item in value:
+            item_digest = hashlib.sha256()
+            _update_semantic_value(item_digest, item)
+            encoded_items.append(item_digest.digest())
+        _digest_part(digest, "set-start", str(len(encoded_items)).encode("ascii"))
+        for encoded in sorted(encoded_items):
+            _digest_part(digest, "set-item", encoded)
+        _digest_part(digest, "set-end")
+    else:
+        raise MetadataValidationError(
+            "semantic payload 包含不支持的值类型: " + type(value).__name__
+        )
+
+
+def _update_semantic_array(digest: Any, values: np.ndarray) -> None:
+    array = np.asarray(values)
+    _digest_part(digest, "array-start")
+    _update_semantic_value(digest, tuple(int(item) for item in array.shape))
+    _update_semantic_value(digest, array.dtype.str)
+    if array.dtype.fields is not None:
+        raise MetadataValidationError("semantic payload 不支持 structured dtype")
+    if array.dtype.kind in "biufcmM":
+        canonical_dtype = array.dtype.newbyteorder("<")
+        canonical = np.ascontiguousarray(array.astype(canonical_dtype, copy=False))
+        _digest_part(digest, "array-bytes", canonical.tobytes(order="C"))
+    elif array.dtype.kind in "SUO":
+        _digest_part(digest, "array-items", str(array.size).encode("ascii"))
+        for item in array.reshape(-1, order="C"):
+            _update_semantic_value(digest, item)
+    else:
+        raise MetadataValidationError(
+            f"semantic payload 不支持 dtype {array.dtype}"
+        )
+    _digest_part(digest, "array-end")
+
+
+def _update_xarray_variable(digest: Any, name: str, variable: xr.Variable) -> None:
+    _update_semantic_value(digest, name)
+    _update_semantic_value(digest, tuple(variable.dims))
+    _update_semantic_value(digest, dict(variable.attrs))
+    _update_semantic_array(digest, np.asarray(variable.values))
+
+
+def semantic_payload_digest(record: ManifestRecord, payload: Any) -> str:
+    """Return a canonical SHA-256 attestation for one record and live payload.
+
+    The digest is independent of Python container identity and stable across a
+    deep copy. It binds the complete public manifest record to Dataset
+    dimensions, coordinates, variables, dtypes, values and attributes, or to a
+    recursively canonical Mapping payload. It is an AB runtime attestation and
+    intentionally does not change ``DatasetBundle.v2``.
+    """
+
+    if not isinstance(record, ManifestRecord):
+        raise MetadataValidationError("semantic payload digest 需要 ManifestRecord")
+    digest = hashlib.sha256()
+    _digest_part(digest, "a.semantic-payload-attestation.v1")
+    _update_semantic_value(digest, record.to_dict())
+    if isinstance(payload, xr.Dataset):
+        _digest_part(digest, "xarray-dataset-start")
+        _update_semantic_value(digest, dict(payload.attrs))
+        _update_semantic_value(
+            digest,
+            {name: int(size) for name, size in sorted(payload.sizes.items())},
+        )
+        _digest_part(digest, "coordinates-start")
+        for name in sorted(payload.coords):
+            _update_xarray_variable(digest, name, payload.coords[name].variable)
+        _digest_part(digest, "coordinates-end")
+        _digest_part(digest, "data-variables-start")
+        for name in sorted(payload.data_vars):
+            _update_xarray_variable(digest, name, payload.data_vars[name].variable)
+        _digest_part(digest, "data-variables-end")
+        _digest_part(digest, "xarray-dataset-end")
+    elif isinstance(payload, Mapping):
+        _digest_part(digest, "mapping-payload-start")
+        _update_semantic_value(digest, payload)
+        _digest_part(digest, "mapping-payload-end")
+    else:
+        raise MetadataValidationError(
+            "semantic payload 必须是 xarray.Dataset 或 Mapping"
+        )
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,8 +390,14 @@ class StandardDataFrame:
         return replace(self, generation_id=generation_id)
 
     def consumer_copy(self) -> StandardDataFrame:
-        """Return an isolated xarray container while sharing read-only array buffers."""
+        """Return a deep, read-only payload snapshot for an external consumer."""
 
         if isinstance(self.payload, xr.Dataset):
-            return replace(self, payload=_freeze_dataset(self.payload.copy(deep=False)))
-        return self
+            copied = self.payload.copy(deep=True)
+            copied.attrs = copy.deepcopy(dict(self.payload.attrs))
+            for name in copied.variables:
+                copied[name].attrs = copy.deepcopy(dict(self.payload[name].attrs))
+            return replace(self, payload=_freeze_dataset(copied))
+        if isinstance(self.payload, Mapping):
+            return replace(self, payload=_deep_freeze(self.payload))
+        return replace(self)

@@ -89,6 +89,9 @@ class SimulationClock:
 
         def unsubscribe() -> None:
             with self._lock:
-                self._seek_listeners.remove(listener)
+                # Cleanup callbacks are deliberately idempotent so independent
+                # A/B owners can safely unwind the same orchestration scope.
+                if listener in self._seek_listeners:
+                    self._seek_listeners.remove(listener)
 
         return unsubscribe

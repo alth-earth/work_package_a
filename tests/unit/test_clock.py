@@ -17,3 +17,15 @@ def test_clock_play_pause_speed_and_seek_generation():
     snapshot = clock.seek(start + timedelta(days=1))
     assert snapshot.generation_id == 1
     assert seen == [snapshot]
+
+
+def test_seek_unsubscribe_is_idempotent():
+    clock = SimulationClock(datetime(2026, 7, 15, tzinfo=UTC))
+    seen = []
+    unsubscribe = clock.subscribe_seek(seen.append)
+
+    unsubscribe()
+    unsubscribe()
+    clock.seek(datetime(2026, 7, 16, tzinfo=UTC))
+
+    assert seen == []

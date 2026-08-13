@@ -17,13 +17,15 @@ from arctic_route_data.models import (
     ManifestRecord,
     QualityFlag,
     StandardDataFrame,
+    semantic_payload_digest,
 )
 from arctic_route_data.publisher import AcquisitionPublisher
-from arctic_route_data.service import WorkPackageA
+from arctic_route_data.service import CoverageReport, PreparedWindow, WorkPackageA
 
 __all__ = [
     "AcquisitionPublisher",
     "Bounds",
+    "CoverageReport",
     "DataCategory",
     "DatasetBundle",
     "DatasetBundleCoverage",
@@ -34,6 +36,7 @@ __all__ = [
     "ManifestStore",
     "NativeForecastAcquirer",
     "PartitionedABCache",
+    "PreparedWindow",
     "QualityFlag",
     "SimulationClock",
     "SourceIssueTimeResolver",
@@ -41,6 +44,7 @@ __all__ = [
     "WorkPackageA",
     "WorkPackageAConfig",
     "load_config",
+    "semantic_payload_digest",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"

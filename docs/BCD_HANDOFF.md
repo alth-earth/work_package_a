@@ -5,7 +5,9 @@ dataclass。当前合同真源为：
 
 - 共享事实与运行身份：`/root/my_project/arctic_route_contracts/`；
 - A→B：本仓库 [AB_INTERFACE.md](AB_INTERFACE.md) 与正式 `a.dataset-bundle.v2`；
-- B 正式开发要求：`/root/my_project/work_package_b_handoff/工作包B-v2正式开发交接书.md`；
+- B 当前实现与运行入口：`/root/my_project/work_package_b/README.md`；
+- B 历史开发要求与旧 ZIP 审计：
+  `/root/my_project/work_package_b_handoff/工作包B-v2正式开发交接书.md`；
 - B→C：`/root/my_project/work_package_c/docs/BC_CONTRACT.md`、Python 模型和
   `risk-frame-v2.schema.json`；
 - C→D：`/root/my_project/work_package_c/docs/CD_CONTRACT.md`、Python 模型和
@@ -59,11 +61,17 @@ A --StandardDataFrame + DatasetBundle--> B --RiskFrame v2--> C --RoutePlan v2-->
 - 有真实归档验证的 source snapshot 或 raw publication、内容 QC、网格 identity 和
   规范化摘要；普通插件自报 checksum 不能获得 provenance；
 - payload 对消费者不可变；
+- `PreparedWindow.payload_attestations` 逐 data ID 绑定完整 record 与规范 payload，B 在输入
+  信封和 build 前独立重算并深快照；
 - 可由 `prepare_window_for_b` 对调用方显式时域逐类检查最低覆盖、完整请求窗、内部缺口
   和 provenance；
 - `DatasetBundle.v2` 以 `bundle_id + bundle_digest` 精确绑定所有实际选中帧，
   并逐类型绑定可重算的 cadence、support、gaps、provenance 与 complete 证明；v1
   只用于 legacy 读取，禁止创建正式 RunContext。
+- 跨进程/重启后由 B 输入信封显式携带 `generation_id + knowledge_as_of + bundle`，
+  通过 A 公共 `resolve_dataset_bundle_for_b()` 恢复精确 revision；B 不读取 A 的
+  SQLite/ready/raw。RunContext 有 bundle ID/digest 和场景起止时间，但不含 generation、
+  knowledge cutoff、当前 clock snapshot 或完整 bundle 文档；两侧身份必须交叉校验。
 
 A 的规范注册表现有 14 类环境数据。船舶 CSV/参数属于共享 `VesselProfile`，不是 A 的
 第 15 类。A 不提供共享目标风险网格，不输出风险或速度因子。
@@ -195,4 +203,6 @@ checksum <- record.checksum
 - D 只展示同一场景/代次的最新 revision；旧任务迟到结果不得重新激活。
 
 正式执行顺序是：共享场景 → A 全窗采集/回放 → DatasetBundle → RunContext → B → C
-→ D。当前 B 只有交接规范而没有正式实现，所以端到端真实验收仍是明确待办。
+→ D。当前 `work_package_b/` 已完成 `demo_unvalidated` 确定性工程基线，并以正式公共
+接口通过 12 类、动态时域和持久 committed-window 的夹具联调；当前真实 A 长窗仍是
+v1/9 类/旧 corridor，故端到端**实源**验收仍是明确待办，不能把夹具通过改写为实源完成。

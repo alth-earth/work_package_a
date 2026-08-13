@@ -76,6 +76,11 @@ class LocalArchiveSource:
     def get_bracketing(self, *args, **kwargs):
         return self.manifest.get_bracketing(*args, **kwargs)
 
+    def get_record_by_id(self, data_id: str) -> ManifestRecord | None:
+        """Resolve one immutable manifest revision without exposing its storage."""
+
+        return self.manifest.get(data_id)
+
     def load_frame(
         self, record: ManifestRecord, *, generation_id: int, as_of: datetime
     ) -> StandardDataFrame:
@@ -109,3 +114,45 @@ class LocalArchiveSource:
                 record,
                 checksum_cache={},
             )
+
+    def load_verified_frame(
+        self,
+        record: ManifestRecord,
+        *,
+        generation_id: int,
+        as_of: datetime,
+        expected_provenance_id: str,
+    ) -> StandardDataFrame:
+        """Load an exact revision while rechecking bound archive evidence.
+
+        This formal cross-process/restart capability keeps manifest paths,
+        SQLite and raw/source-snapshot layout behind Work Package A.
+        """
+
+        with self._provenance_lock:
+            from arctic_route_data.doctor import verified_archived_provenance_id
+
+            before = verified_archived_provenance_id(
+                self.archive_root,
+                record,
+                checksum_cache={},
+            )
+            if before != expected_provenance_id:
+                raise ChecksumMismatchError(
+                    f"{record.data_id} 的归档 provenance 与 DatasetBundle 不一致"
+                )
+            frame = self.load_frame(
+                record,
+                generation_id=generation_id,
+                as_of=as_of,
+            )
+            after = verified_archived_provenance_id(
+                self.archive_root,
+                record,
+                checksum_cache={},
+            )
+            if after != expected_provenance_id:
+                raise ChecksumMismatchError(
+                    f"{record.data_id} 的归档 provenance 在读取期间发生变化"
+                )
+            return frame

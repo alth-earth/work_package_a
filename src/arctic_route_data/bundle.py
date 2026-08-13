@@ -16,6 +16,26 @@ from arctic_route_data.errors import MetadataValidationError
 from arctic_route_data.models import ManifestRecord, QualityFlag, validate_identifier
 from arctic_route_data.timeutils import ensure_utc, isoformat_utc, parse_utc
 
+_FORMAL_CADENCE_HOURS: dict[str, frozenset[float | None]] = {
+    # Frozen GFS is 3-hourly; retrospective NCEI analysis is 6-hourly.
+    "wind_field": frozenset({3.0, 6.0}),
+    "temperature": frozenset({3.0, 6.0}),
+    "visibility": frozenset({3.0, 6.0}),
+    "wave": frozenset({3.0}),
+    # Current A Copernicus publications are hourly. The coarser values in
+    # service.py are legacy fallbacks only and must never enter a formal v2.
+    "ocean_current": frozenset({1.0}),
+    "water_level": frozenset({1.0}),
+    "sea_ice_concentration": frozenset({1.0}),
+    "sea_ice_type": frozenset({1.0}),
+    "sea_ice_edge": frozenset({1.0}),
+    "sea_ice_drift": frozenset({1.0}),
+    "sea_ice_thickness": frozenset({1.0}),
+    "bathymetry": frozenset({None}),
+    "land_sea_mask": frozenset({None}),
+    "long_term_restricted_area": frozenset({None}),
+}
+
 
 def _is_sha256(value: object) -> bool:
     return (
@@ -332,6 +352,7 @@ class DatasetBundle:
             raise MetadataValidationError(
                 "DatasetBundle v2 必须为每个 requested_data_type 声明 cadence（静态层为 null）"
             )
+        _validate_formal_cadences(intervals, requested_types)
         coverage = tuple(
             _build_coverage(
                 data_type=data_type,
@@ -471,6 +492,7 @@ class DatasetBundle:
             if not isinstance(raw_coverage, list):
                 raise MetadataValidationError("DatasetBundle.coverage 必须是数组")
             intervals = _parse_coverage_intervals(raw_coverage, requested_types)
+            _validate_formal_cadences(intervals, requested_types)
             coverage = tuple(
                 _build_coverage(
                     data_type=data_type,
@@ -711,3 +733,35 @@ def _parse_coverage_intervals(
     if tuple(intervals) != requested_types:
         raise MetadataValidationError("DatasetBundle.coverage 必须按 data_type 规范排序")
     return intervals
+
+
+def _validate_formal_cadences(
+    intervals: Mapping[str, float | None], requested_types: tuple[str, ...]
+) -> None:
+    """Keep A's formal v2 output aligned with the shared-contract whitelist."""
+
+    for data_type in requested_types:
+        if data_type not in _FORMAL_CADENCE_HOURS:
+            raise MetadataValidationError(
+                f"DatasetBundle v2 含未知正式 data_type: {data_type}"
+            )
+        interval = intervals[data_type]
+        if interval is not None and (
+            isinstance(interval, bool)
+            or not isinstance(interval, int | float)
+            or not math.isfinite(float(interval))
+            or interval <= 0
+        ):
+            raise MetadataValidationError(
+                "DatasetBundle expected_interval_hours 必须为正数或 null"
+            )
+        normalized = None if interval is None else float(interval)
+        allowed = _FORMAL_CADENCE_HOURS[data_type]
+        if normalized not in allowed:
+            allowed_values = sorted(
+                allowed, key=lambda value: -1 if value is None else value
+            )
+            raise MetadataValidationError(
+                f"DatasetBundle v2 的 {data_type} cadence={normalized!r} "
+                f"不符合共享正式合同；允许值={allowed_values}"
+            )
