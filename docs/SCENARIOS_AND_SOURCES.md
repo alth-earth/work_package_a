@@ -42,7 +42,7 @@ design_distance = candidate_route_distance（已有候选线时）
                   else great_circle_distance × corridor_detour_factor
 planning_speed = nominal_speed × conservative_environment_speed_factor
 eta = design_distance / planning_speed
-required = 向上取整到 24 h [eta + max(24 h, 20% × eta)]
+required = 向上取整到 24 h [eta + max(48 h, 20% × eta)]
 ```
 
 当前资源预算内的场景边界为：
@@ -62,7 +62,7 @@ cd /root/my_project/arctic_route_contracts
 .venv/bin/arctic-route-context recommend-horizon \
   --corridor offshore_murmansk_to_offshore_dikson \
   --vessel nordic_odyssey_reference_v1 \
-  --candidate-route-distance-nm 1250
+  --candidate-route-distance-nm 1137
 ```
 
 在冻结模板采集时把同一距离传给 A：
@@ -71,7 +71,7 @@ cd /root/my_project/arctic_route_contracts
 .mamba-env/bin/uv run --extra acquisition --extra contracts arctic-data acquire-forecast \
   --shared-scenario murmansk_dikson_frozen_forecast_template_v1 \
   --shared-simulation-start 2026-08-12T00:00:00Z \
-  --shared-candidate-route-distance-nm 1250 --sources gfs
+  --shared-candidate-route-distance-nm 1137 --sources gfs
 ```
 
 物化后的场景 ID 会带非默认时域（如 `_h144`）。若没有候选线，则明确使用模板保守
@@ -117,7 +117,7 @@ C 的优化终点止于伊斯峡湾外部。朗伊尔城及峡湾内部轨迹可
 
 | A `data_type` | 当前来源/处理 | 时空角色 | 本轮边界 |
 |---|---|---|---|
-| `wind_field` | GFS；历史用 NCEI 分析，冻结场景用预报 | dynamic | 真东/真北；历史 6 h、冻结预报 3 h |
+| `wind_field` | GFS；历史用 NCEI 分析，冻结场景用预报 | dynamic | 真东/真北；历史 6 h、冻结预报 3 h；NCEI OA 失败只回退官方 THREDDS |
 | `temperature` | GFS 2 m 温度 | dynamic | K；历史 6 h、冻结预报 3 h |
 | `visibility` | GFS 地面能见度 | dynamic | m；历史 6 h、冻结预报 3 h |
 | `wave` | Copernicus wave | dynamic | 波向为 from true north clockwise，3 h |
@@ -147,8 +147,9 @@ C 的优化终点止于伊斯峡湾外部。朗伊尔城及峡湾内部轨迹可
 
 `bathymetry` 与 `long_term_restricted_area` 是共享场景的可选研究/信息层：缺少它们
 不会单独阻止正式运行上下文成立，但 A 已实现并保留两类规范接口、采集入口和来源证据，
-完整 14 类验收仍应采集它们。“可选”不表示未实现，也不授予导航安全语义；水深当前
-不是核心净水深硬约束，限制区也不得自动变成 `hard_mask`。
+本轮 A–B–C 主线 bundle 固定为恰好 12 类。两类可选层单独采集、单独报告且不阻塞
+基线；“可选”不表示未实现，也不授予导航安全语义。水深当前不是核心净水深硬约束，
+限制区也不得自动变成 `hard_mask`。
 
 ## 5. 四个容易混淆的数据决策
 
@@ -230,7 +231,11 @@ cd /root/my_project/work_package_a
 ```bash
 SCENARIO=murmansk_dikson_july_2026_retrospective_v1 make acquire-gfs
 SCENARIO=murmansk_dikson_july_2026_retrospective_v1 make acquire-copernicus
-SCENARIO=murmansk_dikson_july_2026_retrospective_v1 make acquire-static
+SCENARIO=murmansk_dikson_july_2026_retrospective_v1 make acquire-land-sea-mask
+
+# 可选研究/信息层不阻塞 12 类基线，分别执行和报告
+SCENARIO=murmansk_dikson_july_2026_retrospective_v1 make acquire-bathymetry
+SCENARIO=murmansk_dikson_july_2026_retrospective_v1 make acquire-emodnet
 ```
 
 冻结当前预报模板必须显式给锚点：
@@ -255,15 +260,16 @@ SIMULATION_START=2026-08-12T00:00:00Z make acquire-gfs
 采集完成后先以对应模式回放并写 DatasetBundle，再绑定 RunContext。事后回放示例：
 
 ```bash
+# 先把所选 12 类记录的最大 issue_time 写入 KNOWLEDGE_AS_OF；不得复制固定日期
 .mamba-env/bin/uv run arctic-data replay \
   --data-root data \
   --route-id offshore_murmansk_to_offshore_dikson \
   --at 2026-07-15T00:00:00Z \
   --mode retrospective_best_estimate \
-  --knowledge-as-of 2026-08-12T14:00:00Z \
+  --knowledge-as-of "$KNOWLEDGE_AS_OF" \
   --types wind_field temperature visibility wave ocean_current water_level \
           sea_ice_concentration sea_ice_type sea_ice_edge sea_ice_drift \
-          sea_ice_thickness bathymetry land_sea_mask long_term_restricted_area \
+          sea_ice_thickness land_sea_mask \
   --horizon-hours 168 --minimum-horizon-hours 168 \
   --bundle-output data/output/bundles/murmansk-july-v1.json --summary-only
 
@@ -292,9 +298,14 @@ SIMULATION_START=2026-08-12T00:00:00Z make acquire-gfs
 数据集阶段失败，仍待源服务恢复后复验。上述证据不证明任意未来日期都覆盖，也不替代
 完整长窗验收。0.3.1 的 9 类、168 h、1001 帧联合 bundle 仍作为历史基线保留。
 
-## 10. 20 天/个人电脑的实施顺序
+## 10. 当前最多 10 个自然日的实施顺序
 
-1. 先完成一个主航区、一个事后场景的 14 类完整 bundle 和 doctor；
+旧“20 天总体计划”仅作为历史设计背景，不再是有效排期。当前 A–B–C 主线应在 Day 7
+前形成可重复演示，Day 8–9 只在主线稳定后推进四层 v3，Day 10 仅做阻断修复、回归和
+文档冻结。
+
+1. 先完成主航区、一个正式场景的恰好 12 类完整 bundle、RunContext 和 doctor；
+   `bathymetry`、`long_term_restricted_area` 只做独立可选报告；
 2. B 先做确定性逐小时连续化、风险与置信度，不等待大模型训练；
 3. C 先让全航程参考线跑通，再增量加入 24–72 h、0–24 h、0–6 h 三层；
 4. 将同一 B/C 参数原样迁移到测试航区；

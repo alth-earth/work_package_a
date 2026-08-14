@@ -1,4 +1,4 @@
-# 工作包 A 架构追踪与验收口径（v0.4.1）
+# 工作包 A 架构追踪与验收口径（v0.4.2）
 
 本文只追踪 A。共享事实真源在 `arctic_route_contracts`；正式 B 实现在
 `work_package_b/`；BC/CD 的合同真源在工作包 C。`work_package_b_handoff/` 保留设计约束和
@@ -11,10 +11,10 @@
 | 禁止 implicit latest | corridor 模式强制 start + end/horizon + mode；共享模式从 Scenario 唯一解析 | CLI 正反测试 |
 | 双历史语义不混称 | `AcquisitionMode`、共享 `ScenarioMode` | frozen/retrospective 冲突与模板物化测试 |
 | 7 月事后回放允许后补档案 | simulation clock 与 `knowledge_as_of` 分离 | 因果/事后/倒退/seek 测试 |
-| 动态航程窗 | 共享 `HorizonPolicy` + `recommend-horizon`；A 可按候选距离物化冻结模板；Murmansk 144–216 h、Tromsø 72–144 h | shared contracts CLI/cap/fail + A shared-scenario 测试 |
+| 动态航程窗 | 共享 `HorizonPolicy` + `recommend-horizon`；最小缓冲 48 h；默认 168/96 h、上限 216/144 h | shared contracts CLI/cap/fail + A shared-scenario 测试 |
 | 两条航区事实唯一 | `arctic_route_contracts/configs/corridors`；A 只适配 `route_id` | shared-scenario CLI 与冲突测试 |
 | GFS 未来窗 | NOMADS cycle/lead + 完整末端支撑 | 0.3.1 真实 168 h + 合同测试 |
-| GFS 历史窗节省传输 | NCEI 6 h analysis、`.inv`、严格 HTTP Range | 2026-07-15 单周期真实 937,236 B smoke；Range 206/忽略 Range 拒绝测试 |
+| GFS 历史窗节省传输 | NCEI 6 h analysis、`.inv`、严格 HTTP Range；OA 入口失败时使用官方 THREDDS FileServer 且记录原因 | 2026-07-15 单周期真实 937,236 B smoke；两入口 Range 206/忽略 Range 拒绝测试 |
 | Copernicus 凭据安全 | 严格 dotenv parser、mode 600、不 shell-source | 空/半配置/非法键/权限测试 |
 | 三时间 UTC 且防未来 | models/manifest/source/service | issue/valid/ingest、future 和 revision 测试 |
 | 精确来源证据 | snapshot、request metadata、checksum/byte ranges | publisher、archive、doctor 测试 |
@@ -74,7 +74,7 @@
 | seek/generation | reset generation、旧任务迟到拒绝 | tick/seek 竞态测试 |
 | 内存边界 | static/slow/dynamic/event 分区、lease | limit/lease/expiry 测试 |
 
-`PreparedWindow.as_of_time` 的字段名为 v1 兼容保留；0.4.1 中它表示
+`PreparedWindow.as_of_time` 的字段名为 v1 兼容保留；从 0.4.1 起它表示
 `knowledge_as_of`。因果模式下等于模拟时钟，事后模式下可以显式更晚。
 
 ## 6. 共享配置和跨包身份
@@ -106,8 +106,8 @@
 - 0.4.0 新来源达到第 3 级：NCEI byte-range、GEBCO、EMODnet、neXtSIM 冰型/冰缘；
   其中 `source-valid-mask.v2` 与冰型/冰缘单次下载复用是在实源成功后升级，最新路径
   合同测试已过，但两次复验在 Toolbox 打开数据集阶段空异常，仍待补实源 smoke；
-- 两条航区 × retrospective/frozen × 14 类仍未达到第 4 级，禁止把多个 smoke 拼成
-  正式完整 bundle；
+- 主航区恰好 12 类的 168 h 主线仍未达到第 4 级，禁止把多个 smoke 或两类可选层
+  拼成正式完整 bundle；`bathymetry`、`long_term_restricted_area` 独立报告且不阻塞；
 - B `0.1.0` 工程基线已用正式公共接口完成 12 类、96/168/216 h 夹具验收，并有
   A 归档发布→重启→exact resolver→B 的跨进程篡改负例；这些属于第 2 级工程证据，
   不是指定场景真实源验收。

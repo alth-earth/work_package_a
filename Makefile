@@ -7,7 +7,7 @@ export ECCODES_DIR ?= $(MAMBA_PREFIX)
 
 COPERNICUS_ENV ?= $(CURDIR)/.env.copernicus
 
-.PHONY: env-create env-update sync sync-all test lint check demo acquire-gfs acquire-copernicus acquire-static doctor clean
+.PHONY: env-create env-update sync sync-all test lint check demo acquire-gfs acquire-copernicus acquire-static acquire-land-sea-mask acquire-bathymetry acquire-emodnet doctor clean
 
 env-create:
 	mamba env create --prefix $(MAMBA_PREFIX) -f environment.yml
@@ -27,17 +27,17 @@ test:
 	$(UV) run --extra acquisition --extra contracts pytest
 
 lint:
-	$(UV) run --extra acquisition ruff check src tests
+	$(UV) run --extra acquisition --extra contracts ruff check src tests
 
 check: lint test
 	$(UV) sync --check --extra acquisition --extra contracts
-	$(UV) run --extra acquisition arctic-data --help
+	$(UV) run --extra acquisition --extra contracts arctic-data --help
 
 demo:
 	$(UV) run arctic-data demo --workspace data/demo-run --reset
 
 acquire-gfs:
-	$(UV) run --extra acquisition arctic-data acquire-forecast \
+	$(UV) run --extra acquisition --extra contracts arctic-data acquire-forecast \
 		--shared-scenario "$${SCENARIO:-tromso_isfjorden_july_2026_retrospective_v1}" \
 		--sources gfs \
 		$${SIMULATION_START:+--shared-simulation-start $$SIMULATION_START} \
@@ -45,18 +45,31 @@ acquire-gfs:
 
 acquire-copernicus:
 	@test -f "$(COPERNICUS_ENV)" || (echo "缺少 $(COPERNICUS_ENV)" && exit 1)
-	$(UV) run --extra acquisition arctic-data acquire-forecast \
+	$(UV) run --extra acquisition --extra contracts arctic-data acquire-forecast \
 		--shared-scenario "$${SCENARIO:-tromso_isfjorden_july_2026_retrospective_v1}" \
 		--sources copernicus --copernicus-env-file "$(COPERNICUS_ENV)" \
 		$${SIMULATION_START:+--shared-simulation-start $$SIMULATION_START} \
 		$${TYPES:+--types $$TYPES}
 
-acquire-static:
-	$(UV) run --extra acquisition arctic-data acquire-forecast \
+acquire-static: acquire-land-sea-mask
+
+acquire-land-sea-mask:
+	$(UV) run --extra acquisition --extra contracts arctic-data acquire-forecast \
 		--shared-scenario "$${SCENARIO:-tromso_isfjorden_july_2026_retrospective_v1}" \
-		--sources gebco emodnet \
-		$${SIMULATION_START:+--shared-simulation-start $$SIMULATION_START} \
-		$${TYPES:+--types $$TYPES}
+		--sources gebco --types land_sea_mask \
+		$${SIMULATION_START:+--shared-simulation-start $$SIMULATION_START}
+
+acquire-bathymetry:
+	$(UV) run --extra acquisition --extra contracts arctic-data acquire-forecast \
+		--shared-scenario "$${SCENARIO:-tromso_isfjorden_july_2026_retrospective_v1}" \
+		--sources gebco --types bathymetry \
+		$${SIMULATION_START:+--shared-simulation-start $$SIMULATION_START}
+
+acquire-emodnet:
+	$(UV) run --extra acquisition --extra contracts arctic-data acquire-forecast \
+		--shared-scenario "$${SCENARIO:-tromso_isfjorden_july_2026_retrospective_v1}" \
+		--sources emodnet --types long_term_restricted_area \
+		$${SIMULATION_START:+--shared-simulation-start $$SIMULATION_START}
 
 doctor:
 	$(UV) run arctic-data doctor --data-root data

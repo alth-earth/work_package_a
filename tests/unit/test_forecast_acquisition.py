@@ -14,6 +14,7 @@ from arctic_route_data.forecast_acquisition import (
     _select_hourly_aligned,
     build_gfs_filter_params,
     forecast_hours,
+    ncei_gfs_analysis_thredds_url,
     ncei_gfs_analysis_url,
     ncei_inventory_ranges,
     resolve_acquisition_window,
@@ -76,6 +77,9 @@ def test_ncei_analysis_url_and_inventory_ranges_select_only_required_messages():
 
     assert ncei_gfs_analysis_url(T0).endswith(
         "/202607/20260715/gfs_4_20260715_0000_000.grb2"
+    )
+    assert ncei_gfs_analysis_thredds_url(T0).endswith(
+        "/model-gfs-g4-anl-files/202607/20260715/gfs_4_20260715_0000_000.grb2"
     )
     assert ncei_inventory_ranges(
         inventory, data_types=("wind_field", "temperature", "visibility")
@@ -160,6 +164,82 @@ def test_ncei_range_downloader_never_fetches_full_global_object(tmp_path):
     metadata = forecast_module.json.loads(request_metadata.read_text(encoding="utf-8"))
     assert metadata["byte_ranges"] == [[0, 15], [16, 31], [32, 47], [48, 63]]
     assert (path.parent / metadata["inventory_file"]).is_file()
+
+
+def test_ncei_range_downloader_uses_audited_thredds_fallback(tmp_path):
+    inventory = "\n".join(
+        [
+            "1:0:d=2026071500:VIS:surface:anl:",
+            "2:16:d=2026071500:TMP:2 m above ground:anl:",
+            "3:32:d=2026071500:UGRD:10 m above ground:anl:",
+            "4:48:d=2026071500:VGRD:10 m above ground:anl:",
+            "5:64:d=2026071500:APCP:surface:anl:",
+        ]
+    )
+
+    class Response:
+        def __init__(self, content=b"", *, text="", headers=None, status_code=200):
+            self.content = content
+            self.text = text
+            self.headers = headers or {}
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            return None
+
+        def close(self):
+            return None
+
+    class Session:
+        def __init__(self):
+            self.thredds_requests = []
+
+        def get(self, url, *, timeout, headers=None, stream=False):
+            if url.endswith(".inv"):
+                return Response(
+                    text=inventory,
+                    content=inventory.encode(),
+                    headers={"Last-Modified": "Sat, 18 Jul 2026 08:49:00 GMT"},
+                )
+            if "/oa/prod-model/" in url:
+                raise ConnectionError("archive proxy disconnected")
+            assert "/thredds/fileServer/" in url
+            assert stream is True
+            self.thredds_requests.append(headers)
+            body = (
+                b"GRIB" + b"x" * 12
+                if len(self.thredds_requests) == 1
+                else b"x" * 12 + b"7777"
+                if len(self.thredds_requests) == 4
+                else b"x" * 16
+            )
+            byte_range = headers["Range"].removeprefix("bytes=")
+            return Response(
+                body,
+                status_code=206,
+                headers={
+                    "Content-Range": f"bytes {byte_range}/149691871",
+                    "Content-Length": "16",
+                },
+            )
+
+    session = Session()
+    path, _, source_url = NativeForecastAcquirer(
+        tmp_path / "data", http_session=session
+    )._obtain_ncei_analysis_file(
+        cycle=T0,
+        data_types=("wind_field", "temperature", "visibility"),
+    )
+
+    assert path.is_file()
+    assert len(session.thredds_requests) == 4
+    assert "/thredds/fileServer/" in source_url
+    metadata = forecast_module.json.loads(
+        path.with_suffix(path.suffix + ".metadata.json").read_text(encoding="utf-8")
+    )
+    assert metadata["data_access_method"] == "ncei_thredds_httpserver_range"
+    assert metadata["data_access_fallback_reason"].startswith("ConnectionError:")
+    assert metadata["primary_source_url"].startswith("https://www.ncei.noaa.gov/oa/")
 
 
 def test_ncei_range_downloader_rejects_a_proxy_that_ignores_range(tmp_path):

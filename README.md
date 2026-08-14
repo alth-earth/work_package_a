@@ -2,7 +2,7 @@
 
 工作包 A 是全系统唯一的环境数据入口：从工作包 A 已配置的网站/API 或历史文件取得数据，保存来源证据，拆成单时次标准帧，规范化并质检，然后按模拟时钟安全地交给 B。
 
-当前版本为 `0.4.1`。这是科研演示数据管线，不是航行安全系统。
+当前版本为 `0.4.2`。这是科研演示数据管线，不是航行安全系统。
 
 第一次接手建议依次阅读：
 
@@ -18,7 +18,7 @@
 | 能力 | 当前状态 | 准确边界 |
 |---|---|---|
 | 显式时间窗与双场景 | 已实现 | `retrospective_best_estimate` 与显式锚定的 `frozen_forecast`，禁止隐式 latest |
-| GFS 窗口 | 已实现并真实联网验证 | 未来预报；历史用 NCEI 分析档案和 GRIB byte-range |
+| GFS 窗口 | 已实现并真实联网验证 | 未来预报；历史优先用 NCEI 分析档案 GRIB byte-range，失败时只回退到官方 THREDDS FileServer |
 | Copernicus 窗口 | 已实现；部分实源 smoke | 波浪、含潮总流优先、海面高度、海冰浓度/漂移/厚度/冰型/冰缘；最新 v2 路径和含潮总流仍待补实源复验 |
 | GEBCO/EMODnet | 已实现并真实联网 smoke | 水深、正式陆海分类；四类限制区证据但不自动 hard-mask |
 | 14 类环境注册表 | 已实现 | 旧 ZIP 是 13 类环境 + 船舶；船舶事实已移至共享包，不属于 A 环境层 |
@@ -96,12 +96,12 @@ frame.generation_id == current_generation_id
 arctic-route-context recommend-horizon \
   --corridor offshore_murmansk_to_offshore_dikson \
   --vessel nordic_odyssey_reference_v1 \
-  --candidate-route-distance-nm 1250
+  --candidate-route-distance-nm 1137
 
-.mamba-env/bin/uv run --extra contracts arctic-data acquire-forecast \
+.mamba-env/bin/uv run --extra acquisition --extra contracts arctic-data acquire-forecast \
   --shared-scenario murmansk_dikson_frozen_forecast_template_v1 \
   --shared-simulation-start 2026-08-12T00:00:00Z \
-  --shared-candidate-route-distance-nm 1250 --sources gfs
+  --shared-candidate-route-distance-nm 1137 --sources gfs
 ```
 
 所选时域写入新的具体 `scenario_id/version/config_digest`；不会在原模板上原地改值。
@@ -146,7 +146,8 @@ arctic-route-context recommend-horizon \
 共享场景的正式运行画像要求其中 12 类完整；`bathymetry` 与
 `long_term_restricted_area` 分别作为可选研究层和信息层。可选只影响正式
 `RunContext.v2` 的最低数据集合，不表示 A 未实现这两类接口，也不表示它们可以自动
-生成 `hard_mask`；完整 14 类实源验收仍应包含二者。精确清单见
+生成 `hard_mask`。当前 A–B–C 主线 bundle 固定为恰好 12 类；两类可选层另行采集、
+另行报告，失败不得阻塞基线。精确清单见
 [场景说明](docs/SCENARIOS_AND_SOURCES.md#41-共享场景的-12-类必需层与-2-类可选层)。
 
 矢量旋转的规则是“证据优先”：`eastward/northward` 的 CF `standard_name`
@@ -248,7 +249,11 @@ make doctor
 # 默认使用 2026-07-15 起的 Tromsø–Isfjorden 事后最佳估计场景
 make acquire-gfs
 make acquire-copernicus
-make acquire-static
+make acquire-land-sea-mask  # 12 类基线必需；acquire-static 是兼容别名
+
+# 两类可选研究/信息层独立执行；失败不得阻塞 12 类基线
+make acquire-bathymetry
+make acquire-emodnet
 
 # 切换主航区；场景唯一决定 bbox、UTC 时域和模式
 SCENARIO=murmansk_dikson_july_2026_retrospective_v1 make acquire-gfs
@@ -265,20 +270,20 @@ SIMULATION_START=2026-08-12T00:00:00Z make acquire-copernicus
   --mode retrospective_best_estimate \
   --sources gfs --types wind_field temperature visibility
 
-# 事后回放：模拟时间和事后知识截止时间必须分别写明
+# 事后回放：先把选中 12 类记录的最大 issue_time 写入 KNOWLEDGE_AS_OF，禁止复制固定日期
 .mamba-env/bin/uv run arctic-data replay \
   --data-root data \
   --route-id offshore_murmansk_to_offshore_dikson \
   --at 2026-07-15T00:00:00Z \
   --mode retrospective_best_estimate \
-  --knowledge-as-of 2026-08-12T14:00:00Z \
+  --knowledge-as-of "$KNOWLEDGE_AS_OF" \
   --types wind_field temperature visibility \
   --horizon-hours 168 --minimum-horizon-hours 168 \
   --bundle-output data/output/bundles/murmansk-july.json \
   --summary-only
 ```
 
-完整 14 类命令、RunContext 绑定和两个航区参数见
+12 类主线、两类可选层的独立命令、RunContext 绑定和两个航区参数见
 [SCENARIOS_AND_SOURCES.md](docs/SCENARIOS_AND_SOURCES.md)。
 
 Copernicus 官方 Toolbox 需要免费账户，使用以下任一成对环境变量：
@@ -480,7 +485,9 @@ ID/digest。
 
 ## 11. 已知未解决项
 
-- 两条走廊 × 两种场景 × 14 类的完整长窗真实采集、bundle 和 doctor 矩阵尚未完成；
+- 主航区恰好 12 类的 168 h 正式 bundle、RunContext 和 doctor 证据尚未完成；
+  `bathymetry`、`long_term_restricted_area` 的可选实源结果须另行报告，不进入本轮
+  主线 bundle，也不得阻塞主线；
 - 含潮总流已经是首选，detided 只作显式后备；来源可用时仍需记录是否发生降级，
   禁止把两者相加；含潮总流的整点选择已有测试，但尚未补最新代码的小窗真实发布证据；
 - A 未实现跨源统一目标网格，B 必须做覆盖检查和明确重采样；

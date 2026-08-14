@@ -2,6 +2,21 @@
 
 本文件由项目原 README 改名而来，用于保留工作包 A 首次完整交付的实现说明，现在用于记录变更。当前项目入口、运行方法和 B/C/D 接手指南请阅读 [README.md](README.md)。
 
+## 0.4.2 - 2026-08-13：48 h 航时缓冲与共享采集入口收口
+
+- 接入 `arctic-route-contracts 0.3.0`：两条走廊统一采用至少 48 h 缓冲，默认窗口仍为
+  168/96 h，上限仍为 216/144 h；`DatasetBundle.v2`、`RunContext.v2` 结构不变。
+- `acquire-gfs`、`acquire-copernicus` 和所有共享静态层 Make 入口显式安装
+  `contracts` extra，依赖范围冻结为 `arctic-route-contracts>=0.3,<0.4`，避免运行时
+  缺少或误接不兼容的共享场景适配器。
+- 将必需 `land_sea_mask` 与可选 `bathymetry`、`long_term_restricted_area` 拆成独立
+  采集目标；兼容目标 `acquire-static` 现在只执行必需陆海层，可选源失败不会阻塞
+  恰好 12 类的主线基线，也不会被静默拼入主线 bundle。
+- 文档中的事后 `knowledge_as_of` 改为从所选必需记录最大 `issue_time` 推导，不再复制
+  固定墙钟日期；联网预检与运行制品只写入 Git 忽略目录，并与代码变更分开报告。
+- NCEI OA GRIB Range 被代理断开时，允许切换到 NCEI 官方 THREDDS FileServer；仍只
+  下载 inventory 指定消息，严格要求 206/Content-Range，并记录实际入口和首选失败原因。
+
 ## 0.4.1 - 2026-08-13：B 跨进程精确恢复与正式 cadence 围栏
 
 - 新增公共 `WorkPackageA.resolve_dataset_bundle_for_b()`：重启后可用持久

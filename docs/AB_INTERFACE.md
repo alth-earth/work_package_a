@@ -1,4 +1,4 @@
-# A → B（AB）接口 v0.4.1
+# A → B（AB）接口 v0.4.2
 
 本文是工作包 A 已实现接口的真源。B→C 的正式合同以
 `work_package_c/docs/BC_CONTRACT.md`、C 的 Python 模型和 JSON Schema 为准。
@@ -212,10 +212,13 @@ restored = a.resolve_dataset_bundle_for_b(
 `RunContext.v2` 还会按共享场景画像复核类型集合。当前画像要求 12 类运行层完整：
 风、温度、能见度、波浪、海流、水位、五类海冰层以及 `land_sea_mask`；
 `bathymetry` 和 `long_term_restricted_area` 是可选研究/信息层。两类可选层仍是 A
-已经实现的正式接口，且完整 14 类来源验收仍应包含它们；“可选”既不等于未实现，也
-不允许把水深或限制区自动升级为 `hard_mask`。
+已经实现的正式接口；本轮 A–B–C 主线 bundle 固定为恰好 12 类，两类可选层独立
+采集和报告，失败不得阻塞基线。“可选”既不等于未实现，也不允许把水深或限制区
+自动升级为 `hard_mask`。
 
-CLI 可原子持久该 JSON：
+事后场景不得复制文档中的固定知识截止时间。先以采集完成时刻做一次诊断准备，取所选
+12 类记录的最大 `issue_time` 写入 `KNOWLEDGE_AS_OF`，再正式回放，并要求两次选中的
+data IDs 一致。CLI 可原子持久该 JSON：
 
 ```bash
 .mamba-env/bin/uv run arctic-data replay \
@@ -223,7 +226,7 @@ CLI 可原子持久该 JSON：
   --route-id offshore_murmansk_to_offshore_dikson \
   --at 2026-07-15T00:00:00Z \
   --mode retrospective_best_estimate \
-  --knowledge-as-of 2026-08-12T14:00:00Z \
+  --knowledge-as-of "$KNOWLEDGE_AS_OF" \
   --types wind_field wave ocean_current \
   --horizon-hours 168 \
   --minimum-horizon-hours 168 \

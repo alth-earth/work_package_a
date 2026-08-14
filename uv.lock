@@ -34,7 +34,7 @@ wheels = [
 
 [[package]]
 name = "arctic-route-contracts"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "../arctic_route_contracts" }
 
 [package.metadata]
@@ -47,7 +47,7 @@ dev = [
 
 [[package]]
 name = "arctic-route-data"
-version = "0.4.1"
+version = "0.4.2"
 source = { editable = "." }
 dependencies = [
     { name = "h5netcdf" },

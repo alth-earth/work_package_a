@@ -47,4 +47,4 @@ __all__ = [
     "semantic_payload_digest",
 ]
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"

@@ -92,9 +92,9 @@ def test_frozen_shared_scenario_can_select_horizon_from_candidate_route(capsys):
         == 0
     )
     payload = json.loads(capsys.readouterr().out)
-    assert payload["horizon_hours"] == 120
-    assert payload["scenario_id"].endswith("_h120_v1")
-    assert payload["end"] == "2026-08-17T00:00:00+00:00"
+    assert payload["horizon_hours"] == 144
+    assert payload["scenario_id"].endswith("_h144_v1")
+    assert payload["end"] == "2026-08-18T00:00:00+00:00"
 
 
 def test_frozen_shared_scenario_rejects_candidate_beyond_formal_cap():

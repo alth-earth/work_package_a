@@ -38,6 +38,9 @@ NCEI_GFS_ANALYSIS_ROOT = (
     "https://www.ncei.noaa.gov/oa/prod-model/global-forecast-system/access/"
     "grid-004-0.5-degree/analysis"
 )
+NCEI_GFS_ANALYSIS_THREDDS_ROOT = (
+    "https://www.ncei.noaa.gov/thredds/fileServer/model-gfs-g4-anl-files"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -557,6 +560,7 @@ class NativeForecastAcquirer:
         data_types: tuple[str, ...],
     ) -> tuple[Path, IssueTimeEvidence, str]:
         base_url = ncei_gfs_analysis_url(cycle)
+        thredds_url = ncei_gfs_analysis_thredds_url(cycle)
         inventory_url = base_url + ".inv"
         inventory_response = self.http.get(
             inventory_url, timeout=self.request_timeout_seconds
@@ -578,14 +582,19 @@ class NativeForecastAcquirer:
         )
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"gfs-grid4-anl-f000.{signature}.grib2"
+        request_metadata_path = path.with_suffix(path.suffix + ".metadata.json")
         inventory_checksum = hashlib.sha256(inventory_bytes).hexdigest()
         inventory_path = directory / (
             f"gfs-grid4-anl-f000.{inventory_checksum[:12]}.grib2.inv"
         )
         _atomic_bytes(inventory_path, inventory_bytes)
+        source_url = base_url
+        access_method = "ncei_archive_https_range"
+        fallback_reason: str | None = None
         if not path.is_file() or not _valid_grib(path):
             temporary = path.with_suffix(path.suffix + f".{os.getpid()}.part")
-            try:
+
+            def write_subset(data_url: str) -> None:
                 with temporary.open("wb") as handle:
                     for start, end in ranges:
                         headers = {
@@ -596,7 +605,7 @@ class NativeForecastAcquirer:
                             )
                         }
                         response = self.http.get(
-                            base_url,
+                            data_url,
                             headers=headers,
                             timeout=self.request_timeout_seconds,
                             stream=True,
@@ -617,13 +626,51 @@ class NativeForecastAcquirer:
                         finally:
                             with suppress(AttributeError):
                                 response.close()
-            except Exception:
+
+            try:
+                try:
+                    write_subset(base_url)
+                except Exception as primary_error:
+                    temporary.unlink(missing_ok=True)
+                    fallback_reason = f"{type(primary_error).__name__}: {primary_error}"
+                    source_url = thredds_url
+                    access_method = "ncei_thredds_httpserver_range"
+                    write_subset(thredds_url)
+            except Exception as fallback_error:
                 temporary.unlink(missing_ok=True)
-                raise
+                if fallback_reason is None:
+                    raise
+                raise DataValidationError(
+                    "NCEI GFS 两种官方访问方式均失败；"
+                    f"archive={fallback_reason}; "
+                    f"thredds={type(fallback_error).__name__}: {fallback_error}"
+                ) from fallback_error
             if not _valid_grib(temporary):
                 temporary.unlink(missing_ok=True)
                 raise DataValidationError("NCEI Range 响应无法组成完整的所需 GRIB2 消息")
             temporary.replace(path)
+        elif request_metadata_path.is_file():
+            previous_metadata = json.loads(request_metadata_path.read_text(encoding="utf-8"))
+            previous_source_url = previous_metadata.get("source_url", base_url)
+            if previous_source_url not in {base_url, thredds_url}:
+                raise DataValidationError("缓存的 NCEI source_url 不属于当前两种官方入口")
+            source_url = previous_source_url
+            access_method = previous_metadata.get(
+                "data_access_method",
+                (
+                    "ncei_thredds_httpserver_range"
+                    if source_url == thredds_url
+                    else "ncei_archive_https_range"
+                ),
+            )
+            expected_access_method = (
+                "ncei_thredds_httpserver_range"
+                if source_url == thredds_url
+                else "ncei_archive_https_range"
+            )
+            if access_method != expected_access_method:
+                raise DataValidationError("缓存的 NCEI data_access_method 与 source_url 不一致")
+            fallback_reason = previous_metadata.get("data_access_fallback_reason")
         observed = datetime.now(UTC)
         last_modified = inventory_response.headers.get("Last-Modified")
         issue = observed
@@ -646,9 +693,13 @@ class NativeForecastAcquirer:
             authoritative=authoritative,
         )
         _atomic_json(
-            path.with_suffix(path.suffix + ".metadata.json"),
+            request_metadata_path,
             {
-                "source_url": base_url,
+                "source_url": source_url,
+                "primary_source_url": base_url,
+                "fallback_source_url": thredds_url,
+                "data_access_method": access_method,
+                "data_access_fallback_reason": fallback_reason,
                 "inventory_url": inventory_url,
                 "inventory_file": inventory_path.name,
                 "inventory_checksum": inventory_checksum,
@@ -660,7 +711,7 @@ class NativeForecastAcquirer:
                 "issue_time_evidence": evidence.to_dict(),
             },
         )
-        return path, evidence, base_url
+        return path, evidence, source_url
 
     def acquire_copernicus(
         self,
@@ -1069,6 +1120,16 @@ def ncei_gfs_analysis_url(cycle: datetime) -> str:
         raise ValueError("NCEI GFS analysis cycle 必须是 00/06/12/18Z")
     return (
         f"{NCEI_GFS_ANALYSIS_ROOT}/{cycle:%Y%m}/{cycle:%Y%m%d}/"
+        f"gfs_4_{cycle:%Y%m%d_%H00}_000.grb2"
+    )
+
+
+def ncei_gfs_analysis_thredds_url(cycle: datetime) -> str:
+    cycle = ensure_utc(cycle, field="cycle")
+    if cycle.minute or cycle.second or cycle.microsecond or cycle.hour % 6:
+        raise ValueError("NCEI GFS analysis cycle 必须是 00/06/12/18Z")
+    return (
+        f"{NCEI_GFS_ANALYSIS_THREDDS_ROOT}/{cycle:%Y%m}/{cycle:%Y%m%d}/"
         f"gfs_4_{cycle:%Y%m%d_%H00}_000.grb2"
     )
 
