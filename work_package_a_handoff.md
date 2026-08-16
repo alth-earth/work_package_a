@@ -7,6 +7,9 @@
 
 # 工作包 A 项目交接
 
+> Status: CURRENT — RC1（2026-08-16）。精确身份（bundle/RunContext/TOPAZ 版本）见
+> `docs/DEMO_RC1_BASELINE_20260816.md`；执行历史见 `data/output/golden/EXECUTION_LOG_*.md`。
+
 ## 1. 项目目标与边界
 
 A 是挑战杯系统唯一环境数据入口，负责：下载/接收、来源与时间留证、拆帧、规范化、质量检查、

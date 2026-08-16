@@ -13,6 +13,17 @@
 
 ## Unreleased - 2026-08-15
 
+## Unreleased - 2026-08-16（RC1）
+
+- 新增 `scripts/rebuild_topaz_native.py` 与 `src/arctic_route_data/curvilinear.py`：
+  Copernicus `originalGrid` 原生曲网格按 20h 窗口分段采集 → 保守最近邻重网格
+  （20 km 阈值、水掩膜、跨陆防护、无外推）→ 快照/发布；TOPAZ 5 类重建为
+  `cmems-origg-97062ef099c4`（725 帧），旧 default-part 版本退役隔离。
+- 新增 `scripts/coverage_audit.py`：corridor spatial finite coverage gate
+  （navigable/finite/unknown + per-variable missing）。
+- 交付 mur/dikson RC1 bundle `a-bundle-32cafad4…` 与 RunContext run …0b0005；
+  doctor PASS（4168 项）。
+
 - 完成文档治理：README 改为短入口，新增统一 handoff；将场景/来源稳定事实与顶层冲刺日历
   分离。
 - 交付冻结演示数据 `tromso_isfjorden_august_2026_demo_v1`：12 类齐全、连续 144 h、
