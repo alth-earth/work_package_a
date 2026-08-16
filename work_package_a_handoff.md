@@ -35,8 +35,8 @@ A 不负责风险、目标风险网格、最终 hard-mask 决策、最终船速�
 |---|---|---|
 | 工程实现 | 已完成 | 0.4.2；采集、摄取、归档、回放、bundle v2 和 exact resolver 已实现 |
 | 工程门禁 | 已通过快照 | 2026-08-14：Ruff、lock/sync、CLI 与 172 tests 通过 |
-| 稳定演示数据 | 进行中 | 仍需选定并冻结比赛使用的数据组合与离线复跑证据 |
-| 完整实源长窗 | 未完成 | 主走廊真实 12 类/168 h 全套证据仍是风险，但不阻塞使用明确标注的演示冻结数据 |
+| 稳定演示数据 | 已完成 | `tromso_isfjorden_august_2026_demo_v1`：12 类齐全、144 h、`complete=true`，bundle/RunContext 已生成并双备份 |
+| 完整实源长窗 | 未完成 | 主走廊 12 类/168 h 仍待补；当前 tromso 144 h 冻结数据用于比赛演示 |
 | 科学校准 | 非阻塞 | A 保留来源/QC接口，不声明导航安全 |
 
 ## 4. 已完成清单
@@ -51,6 +51,7 @@ A 不负责风险、目标风险网格、最终 hard-mask 决策、最终船速�
 | 模拟时钟、generation 与 AB cache | `clock.py`、`cache.py`、`service.py` |
 | DatasetBundle v2 与 exact resolver | `bundle.py`、`service.py` |
 | 共享场景/RunContext 适配 | `shared_context.py`、`../arctic_route_contracts/` |
+| 冻结演示数据集（2026-08-15） | `../arctic_route_contracts/configs/scenarios/tromso_isfjorden_august_2026_demo_v1.toml`、`data/output/bundles/*.bundle.json`、`*.run-context.json`、`docs/FROZEN_DEMO_DATASET_DELIVERY.md` |
 | 公共接口与验收口径（源自：work_package_a_handoff_归档_20260815.md） | `docs/AB_INTERFACE.md`、`docs/ARCHITECTURE_TRACE.md` |
 | 旧 A 兼容边界（源自：work_package_a_handoff_归档_20260815.md） | `src/arctic_route_data/legacy.py`、`legacy_downloaders.py`、`docs/LEGACY_MIGRATION.md` |
 
@@ -58,14 +59,16 @@ A 不负责风险、目标风险网格、最终 hard-mask 决策、最终船速�
 
 ### P0：挑战杯主线
 
-1. 为 `offshore_murmansk_to_offshore_dikson` 选择可用连续数据并冻结演示场景。
-2. 生成可离线读取的标准帧、DatasetBundle/RunContext 和最小 doctor 报告。
+1. ~~选定并冻结演示场景~~ 已完成：`tromso_isfjorden_august_2026_demo_v1`（144 h）。
+2. ~~生成标准帧、bundle/RunContext 与 doctor~~ 已完成：12 类 `complete=true`，doctor
+   `errors=[]`，制品双备份。
 3. 用同一冻结制品实际驱动 B、C、D，保存一次初始计划和一次重规划所需数据。
 4. 比赛前至少两次断网复跑；禁止依赖现场凭据或临时目录。
 
 ### P1：工程增强
 
-- 在不影响演示主线时继续补完整 12 类/168 h 真实长窗证据。
+- 主走廊 `offshore_murmansk_to_offshore_dikson` 的 12 类/168 h 真实长窗留作 P1 增强，
+  不阻塞当前 tromso 演示主线。
 - 记录数据源失败和显式后备，不把缺测补零或伪装安全。
 - 改进 watcher heartbeat、调度、失败重试和长期来源报告。
 - 与 B 固定目标网格/覆盖策略；A 继续保存原生网格。
@@ -122,7 +125,7 @@ source snapshot → raw → 拆帧/规范化/QC → ready + manifest
 | 走廊 | 角色 | 端点 | 默认/允许时域 |
 |---|---|---|---|
 | `offshore_murmansk_to_offshore_dikson` | 先完成 | 69.15°N, 33.60°E → 73.55°N, 80.40°E | 168 h / 144–216 h |
-| `tromso_to_isfjorden_outer` | 后迁移 | 69.75°N, 19.00°E → 78.15°N, 13.00°E | 96 h / 72–144 h |
+| `tromso_to_isfjorden_outer` | 后迁移；已交付 144 h 冻结演示数据 | 69.75°N, 19.00°E → 78.15°N, 13.00°E | 96 h / 72–144 h |
 
 详细允许区域、朗伊尔城 AIS 参考点和栅格修正规则见
 [SCENARIOS_AND_SOURCES.md](docs/SCENARIOS_AND_SOURCES.md)。旧 `tromso_to_svalbard` 只能用于历史审计。
@@ -176,7 +179,7 @@ make doctor
 
 ## 10. 已知风险
 
-- 当前完整 12 类/168 h 真实长窗证据仍未形成；
+- 主走廊 12 类/168 h 真实长窗证据仍未形成（tromso 144 h 冻结演示数据已交付）；
 - 外部源、凭据、目录和产品会变化；
 - 本地旧 v1/9 类数据不得冒充新正式制品；
 - watcher 尚非成熟分布式队列；
@@ -203,5 +206,6 @@ make doctor
 - [跨包边界](docs/BCD_HANDOFF.md)
 - [系统权威](../ARCTIC_ROUTE_SYSTEM.md)
 - [十日计划](../ABC_10_DAY_SPRINT.md)
+- [冻结演示数据集交付说明](docs/FROZEN_DEMO_DATASET_DELIVERY.md)
 
 Git 提交与同步由项目负责人在本会话结束后手动执行，本 handoff 不再主动提出提交/推送建议。

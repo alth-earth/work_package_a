@@ -117,6 +117,8 @@ hard-mask 语义。稳定演示仍按当前合同准备 12 类输入，但可以
 - 新来源 smoke：NCEI byte-range、GEBCO、EMODnet 和早期 neXtSIM 小窗已验证；
 - 当前缺口：主走廊恰好 12 类、168 h 的真实 DatasetBundle v2、RunContext、doctor 和
   exact resolver 仍未形成完整证据；latest v2 Copernicus 与 total-with-tide 需复验；
+  2026-08-15 已另交付 `tromso_isfjorden_august_2026_demo_v1`（12 类/144 h 冻结演示数据，
+  `complete=true`）作为当前演示底座；
 - 真实 A→B→C 端到端仍未完成。
 
 ### 7.3 稳定验收闸门（源自：SCENARIOS_AND_SOURCES_归档_20260815.md；实源主线补全后执行）

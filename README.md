@@ -15,8 +15,8 @@
 
 - 工程基线：已实现；2026-08-14 标准 `make check` 为 Ruff、lock/sync、CLI 通过，
   pytest `172 passed`。
-- 实源状态：部分完成；尚无主走廊恰好 12 类、168 h 的正式 bundle、RunContext 和 doctor
-  全套证据。
+- 实源状态：已交付 `tromso_isfjorden_august_2026_demo_v1`（12 类齐全、144 h、
+  `complete=true`，bundle/RunContext 双备份）；主走廊恰好 12 类、168 h 的正式制品仍待补。
 - 跨包状态：夹具链已存在，真实 A→B→C 端到端未完成。
 - 使用边界：科研演示；不生成风险、最终船速或路线，不得用于真实导航。
 

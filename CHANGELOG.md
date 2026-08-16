@@ -11,11 +11,14 @@
 [治理前 CHANGELOG](CHANGELOG.archive-20260814-pre-governance.md)。当前状态与待办以
 [work_package_a_handoff.md](work_package_a_handoff.md) 为准。
 
-## Unreleased - 2026-08-14
+## Unreleased - 2026-08-15
 
-- 完成文档治理：README 改为短入口，新增统一 handoff。
-- 将场景/来源的稳定事实与顶层十日冲刺日历分离。
-- 本轮没有修改代码、Schema、配置或运行语义。
+- 完成文档治理：README 改为短入口，新增统一 handoff；将场景/来源稳定事实与顶层冲刺日历
+  分离。
+- 交付冻结演示数据 `tromso_isfjorden_august_2026_demo_v1`：12 类齐全、连续 144 h、
+  `complete=true`，DatasetBundle/RunContext 已生成并双位置备份；`ocean_current` 显式使用
+  detided 后备。本轮仅新增运行数据与文档，未修改代码、Schema 或依赖。
+- 记录网络与下载约定（直连可用；代理 127.0.0.1:10808 无效；Copernicus 凭据可用）。
 
 ## 0.4.2 - 2026-08-13
 
