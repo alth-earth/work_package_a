@@ -86,6 +86,49 @@ def test_dataset_bundle_digest_is_order_independent_and_covers_exact_records(
     assert changed.bundle_digest != forward.bundle_digest
 
 
+def test_bundle_accepts_logical_cutoff_later_than_max_selected_issue_time(
+    make_record,
+) -> None:
+    """The bundle contract expresses knowledge_as_of independently of the
+    newest selected source issue_time (only issue_time <= as_of is enforced)."""
+
+    records = [
+        make_record(
+            data_id="frame-a",
+            data_type="wind_field",
+            issue_time=T0 - timedelta(hours=2),
+            valid_time=T0,
+            metadata=_provenance("gfs-cycle-a"),
+        ),
+        make_record(
+            data_id="frame-b",
+            data_type="wave",
+            issue_time=T0 - timedelta(hours=1),
+            valid_time=T0 + timedelta(hours=3),
+            metadata=_provenance("cmems-a"),
+        ),
+    ]
+    logical_cutoff = T0 + timedelta(hours=1)
+    verified_ids = {
+        record.data_id: record_provenance_id(record) for record in records
+    }
+    bundle = DatasetBundle.create(
+        corridor_id="route-a",
+        as_of_time=logical_cutoff,
+        requested_start=T0,
+        requested_end=T0 + timedelta(hours=156),
+        minimum_required_end=T0 + timedelta(hours=132),
+        requested_data_types=("wave", "wind_field"),
+        records=tuple(records),
+        verified_provenance_ids=verified_ids,
+        expected_interval_hours={"wave": 3.0, "wind_field": 3.0},
+    )
+    assert bundle.as_of_time == logical_cutoff
+    assert max(record.issue_time for record in records) < logical_cutoff
+    round_trip = DatasetBundle.from_dict(bundle.to_dict())
+    assert round_trip.as_of_time == logical_cutoff
+
+
 def test_dataset_bundle_rejects_future_or_cross_corridor_records(make_record):
     future = make_record(
         data_id="future",
