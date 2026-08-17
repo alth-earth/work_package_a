@@ -24,6 +24,20 @@
 - initial `layer-set-sha256-51824e96…`、replanned `layer-set-sha256-ec74a145…`；
 - 本阶段仅 B 帧新增 provenance attrs（不影响业务），RC1 golden 文件未改。
 
+### 2.1 Repository versions（RC2 Frozen）
+
+| Repo | SHA |
+|---|---|
+| root | `e3f43f2` |
+| contracts | `54ee071` |
+| work_package_a | `5834575` |
+| work_package_b | `6269420` |
+| work_package_c | `ccd1e53` |
+| work_package_d | `0539f31` |
+| arctic_route_orchestrator | `cccad9f` |
+
+Demo Engineering 分支 `demo-engineering` 从以上 RC2 Frozen commits 派生。
+
 ## 3. Scenario B（RC2 Golden）
 
 | 项 | 值 |
