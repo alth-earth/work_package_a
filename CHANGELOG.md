@@ -13,6 +13,14 @@
 
 ## Unreleased - 2026-08-15
 
+## Unreleased - 2026-08-17（RC2 Performance）
+
+- `StandardDataFrame.consumer_view()`：元数据浅拷贝 + 共享只读数组（帧数组
+  构造即只读），供 B envelope 快照避免深拷贝；新增 mutation-safety 测试
+  （共享内存、只读、结构隔离、digest 一致）。
+- 修正 `tests/unit/test_config.py` 中 corridor 2.2.0 过期起点断言（33.60/69.15
+  → 34.00/69.55）；A 179 tests 通过。
+
 ## Unreleased - 2026-08-16（RC1）
 
 - 新增 `scripts/rebuild_topaz_native.py` 与 `src/arctic_route_data/curvilinear.py`：

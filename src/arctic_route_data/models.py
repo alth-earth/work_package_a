@@ -401,3 +401,23 @@ class StandardDataFrame:
         if isinstance(self.payload, Mapping):
             return replace(self, payload=_deep_freeze(self.payload))
         return replace(self)
+
+    def consumer_view(self) -> StandardDataFrame:
+        """Return a fresh shell sharing the same read-only payload buffers.
+
+        Payload arrays are already immutable by construction (``__post_init__``
+        freezes every NumPy buffer), so this avoids the defensive deep copy
+        while still returning a distinct xarray Dataset / Mapping object:
+        structural mutation of one handle cannot affect the other, and in-place
+        writes raise ``ValueError`` on either handle.
+        """
+
+        if isinstance(self.payload, xr.Dataset):
+            copied = self.payload.copy(deep=False)
+            copied.attrs = copy.deepcopy(dict(self.payload.attrs))
+            for name in copied.variables:
+                copied[name].attrs = copy.deepcopy(dict(self.payload[name].attrs))
+            return replace(self, payload=_freeze_dataset(copied))
+        if isinstance(self.payload, Mapping):
+            return replace(self, payload=MappingProxyType(dict(self.payload)))
+        return replace(self)

@@ -69,6 +69,27 @@ def test_consumer_copy_does_not_share_mutable_array_buffers(make_record):
     assert consumer.payload["value"].values.tolist() == [1.0, 2.0]
 
 
+def test_consumer_view_shares_read_only_buffers_and_isolates_structure(make_record):
+    record = make_record()
+    dataset = xr.Dataset({"value": ("x", np.array([1.0, 2.0]))})
+    frame = StandardDataFrame(record, dataset, 0)
+    view = frame.consumer_view()
+
+    assert np.shares_memory(
+        view.payload["value"].values,
+        frame.payload["value"].values,
+    )
+    with pytest.raises(ValueError, match="read-only"):
+        view.payload["value"].values[0] = 3.0
+    with pytest.raises(ValueError, match="read-only"):
+        frame.payload["value"].values[0] = 3.0
+    assert semantic_payload_digest(record, view.payload) == semantic_payload_digest(
+        record, frame.payload
+    )
+    view.payload["derived"] = ("x", [5.0, 6.0])
+    assert "derived" not in frame.payload
+
+
 def test_semantic_payload_digest_is_copy_stable_and_content_sensitive(make_record):
     record = make_record(metadata={"source_snapshot_id": "snapshot-a"})
     dataset = xr.Dataset(

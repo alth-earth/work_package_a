@@ -18,8 +18,8 @@ def test_checked_in_configuration_is_loaded_and_complete():
         "tromso_to_isfjorden_outer",
     }
     assert config.corridors["offshore_murmansk_to_offshore_dikson"].start == (
-        33.60,
-        69.15,
+        34.0,
+        69.55,
     )
     assert config.corridors["tromso_to_isfjorden_outer"].destination == (
         13.00,
