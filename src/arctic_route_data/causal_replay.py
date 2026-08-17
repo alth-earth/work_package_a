@@ -59,6 +59,9 @@ class SourceRecord:
     bbox: tuple[float, float, float, float]
     evidence_authoritative: bool | None
     evidence_method: str | None
+    ingest_time: datetime | None = None
+    version: str | None = None
+    checksum: str | None = None
 
 
 def _parse_utc(value: str) -> datetime:
@@ -72,7 +75,7 @@ def load_manifest_records(manifest_path: str, route_id: str) -> tuple[SourceReco
     try:
         rows = connection.execute(
             "SELECT data_id, data_type, category, issue_time, valid_time, "
-            "quality_flag, bbox_json, metadata_json "
+            "quality_flag, bbox_json, metadata_json, ingest_time, version, checksum "
             "FROM manifest WHERE route_id = ?",
             (route_id,),
         ).fetchall()
@@ -98,6 +101,11 @@ def load_manifest_records(manifest_path: str, route_id: str) -> tuple[SourceReco
                     None if not isinstance(authoritative, bool) else authoritative
                 ),
                 evidence_method=None if not isinstance(method, str) else method,
+                ingest_time=(
+                    _parse_utc(str(row[8])) if row[8] is not None else None
+                ),
+                version=None if row[9] is None else str(row[9]),
+                checksum=None if row[10] is None else str(row[10]),
             )
         )
     return tuple(records)
