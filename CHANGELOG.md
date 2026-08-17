@@ -7,6 +7,12 @@
 
 # 工作包 A 变更记录
 
+## Unreleased - 2026-08-18（Causal Replay 支撑）
+
+- `causal_replay.py`：SourceRecord 增加 ingest_time/version/checksum
+  （与 A 缓存 revision 排序一致），供 B-relevant input digest 使用；
+  无生产路径变更。
+
 详细的历史说明和当期命令保存在
 [治理前 CHANGELOG](CHANGELOG.archive-20260814-pre-governance.md)。当前状态与待办以
 [work_package_a_handoff.md](work_package_a_handoff.md) 为准。

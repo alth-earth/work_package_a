@@ -7,6 +7,10 @@
 
 # 北极航线预测驱动动态规划系统：工作包 A
 
+> 2026-08-18：新增 `src/arctic_route_data/causal_replay.py`（SourceRecord 全
+> revision 身份 + 可见性/支撑扫描），供 orchestrator `causal_replay_preflight.py`
+> 与 `causal_replay_mvp.py` 使用；A 生产路径无改动，RC1/RC2 frozen 不变。
+
 工作包 A 是全系统唯一的环境数据入口，负责下载/接收、来源留证、时间拆帧、规范化、
 质检、不可变归档、manifest、模拟回放和向 B 发布 `DatasetBundle v2`。当前版本为
 `0.4.2`。
