@@ -13,6 +13,11 @@
   （与 A 缓存 revision 排序一致），供 B-relevant input digest 使用；
   无生产路径变更。
 
+## Unreleased - 2026-08-18 第二轮
+
+- `causal_replay.py` 无核心变更；orchestrator 侧完成三窗口解耦与
+  v2 complete-route 集成（见 orchestrator CHANGELOG）。
+
 详细的历史说明和当期命令保存在
 [治理前 CHANGELOG](CHANGELOG.archive-20260814-pre-governance.md)。当前状态与待办以
 [work_package_a_handoff.md](work_package_a_handoff.md) 为准。
