@@ -6,7 +6,7 @@ Content Status:
 Document Role: CANONICAL
 Scope: work package A entrypoint and public boundary
 Branch: research-validation-system
-Last Verified: 2026-08-21
+Last Verified: 2026-08-22
 ---
 
 > **文档治理声明**
@@ -24,9 +24,12 @@ A 的阶段角色为 Environmental Data Acquisition。既有 `PreparedWindow` /
 `DatasetBundle.v2` 和 provenance 边界保持兼容；下一研究目标是建立真实冬季 12-type
 artifact。当前只有夏季正式证据，不能把通用海冰采集接口写成冬季验证已完成。
 
-Winter research now has a configuration-only February 2026 scenario in the
-shared contracts repository. A has not acquired or published its 12-type
-DatasetBundle; status remains `BLOCKED_BY_DATASET` rather than validated.
+Winter research has the February 2026 scenario plus eight newly acquired,
+provenance-complete Copernicus data types. The cached static land/sea mask also
+passes the explicit retrospective coverage diagnostic, so 9/12 rows are ready.
+Wind, temperature and visibility remain blocked by the absent February NCEI
+archive path and a 6 h analysis versus 3 h coverage-policy mismatch. No winter
+`DatasetBundle.v2` has been persisted; status is `PARTIAL / BLOCKED_BY_GFS`.
 
 > 2026-08-18：新增 `src/arctic_route_data/causal_replay.py`（SourceRecord 全
 > revision 身份 + 可见性/支撑扫描），供 orchestrator `causal_replay_preflight.py`
