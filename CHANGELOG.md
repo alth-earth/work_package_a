@@ -1,3 +1,14 @@
+---
+Overall Status: ACTIVE
+Content Status:
+  - COMPLETED
+  - IN_PROGRESS
+Document Role: SUPPORTING
+Scope: work package A change history
+Branch: research-validation-system
+Last Verified: 2026-08-21
+---
+
 > **文档治理声明**
 >
 > - 本文件角色：当前工作包 A 纯版本变更记录。

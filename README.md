@@ -1,3 +1,14 @@
+---
+Overall Status: ACTIVE
+Content Status:
+  - COMPLETED
+  - PLANNED
+Document Role: CANONICAL
+Scope: work package A entrypoint and public boundary
+Branch: research-validation-system
+Last Verified: 2026-08-21
+---
+
 > **文档治理声明**
 >
 > - 本文件角色：当前工作包 A 短入口。
@@ -6,6 +17,12 @@
 > - 改造原因：把快速导航与详细状态、历史验收和操作手册分离，降低人和 AI 误读旧状态的风险。
 
 # 北极航线预测驱动动态规划系统：工作包 A
+
+## Research Validation 定位（2026-08-21 23:18）
+
+A 的阶段角色为 Environmental Data Acquisition。既有 `PreparedWindow` /
+`DatasetBundle.v2` 和 provenance 边界保持兼容；下一研究目标是建立真实冬季 12-type
+artifact。当前只有夏季正式证据，不能把通用海冰采集接口写成冬季验证已完成。
 
 > 2026-08-18：新增 `src/arctic_route_data/causal_replay.py`（SourceRecord 全
 > revision 身份 + 可见性/支撑扫描），供 orchestrator `causal_replay_preflight.py`
