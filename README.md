@@ -24,6 +24,10 @@ A 的阶段角色为 Environmental Data Acquisition。既有 `PreparedWindow` /
 `DatasetBundle.v2` 和 provenance 边界保持兼容；下一研究目标是建立真实冬季 12-type
 artifact。当前只有夏季正式证据，不能把通用海冰采集接口写成冬季验证已完成。
 
+Winter research now has a configuration-only February 2026 scenario in the
+shared contracts repository. A has not acquired or published its 12-type
+DatasetBundle; status remains `BLOCKED_BY_DATASET` rather than validated.
+
 > 2026-08-18：新增 `src/arctic_route_data/causal_replay.py`（SourceRecord 全
 > revision 身份 + 可见性/支撑扫描），供 orchestrator `causal_replay_preflight.py`
 > 与 `causal_replay_mvp.py` 使用；A 生产路径无改动，RC1/RC2 frozen 不变。
