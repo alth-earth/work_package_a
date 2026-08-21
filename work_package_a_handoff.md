@@ -1,3 +1,14 @@
+---
+Overall Status: ACTIVE
+Content Status:
+  - COMPLETED
+  - PLANNED
+Document Role: SUPPORTING
+Scope: work package A handoff
+Branch: research-validation-system
+Last Verified: 2026-08-21
+---
+
 > **文档治理声明**
 >
 > - 本文件角色：当前工作包 A 的人类与 AI 统一交接入口。

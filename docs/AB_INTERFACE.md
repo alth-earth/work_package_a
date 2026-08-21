@@ -1,3 +1,13 @@
+---
+Overall Status: ACTIVE
+Content Status:
+  - COMPLETED
+Document Role: CANONICAL
+Scope: A to B public interface
+Branch: research-validation-system
+Last Verified: 2026-08-21
+---
+
 # A → B（AB）接口 v0.4.2
 
 本文是工作包 A 已实现接口的真源。B→C 的正式合同以
