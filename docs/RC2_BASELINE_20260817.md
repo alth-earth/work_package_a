@@ -1,4 +1,4 @@
-# RC2 Frozen Baseline（2026-08-17）
+# RC2 冻结基线（2026-08-17）
 
 > 本文件记录 RC2 多场景冻结基线。Scenario A（RC1）以
 > `DEMO_RC1_BASELINE_20260816.md` 为权威；本文件为 Scenario B（Tromsø）
