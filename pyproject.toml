@@ -11,6 +11,8 @@ dependencies = [
     "requests>=2.32,<3",
     "scipy>=1.15,<2",
     "xarray>=2025.1,<2027",
+    "cdsapi[acquisition]>=0.7,<1",
+    "cfgrib[acquisition]>=0.9.10",
 ]
 
 [project.optional-dependencies]
