@@ -27,9 +27,13 @@ artifact。当前只有夏季正式证据，不能把通用海冰采集接口写
 Winter research has the February 2026 scenario plus eight newly acquired,
 provenance-complete Copernicus data types. The cached static land/sea mask also
 passes the explicit retrospective coverage diagnostic, so 9/12 rows are ready.
-Wind, temperature and visibility remain blocked by the absent February NCEI
-archive path and a 6 h analysis versus 3 h coverage-policy mismatch. No winter
-`DatasetBundle.v2` has been persisted; status is `PARTIAL / BLOCKED_BY_GFS`.
+Wind, temperature and visibility remain unpublished. The exact February NCEI
+direct paths are absent, while Round4 official-catalogue validation identifies
+C3S CARRA as a 3-hour, three-variable candidate pending source-policy approval,
+CDS credentials/terms, and a projection-aware wind-vector adapter. A's formal
+bundle already accepts record-declared 3 h or 6 h meteorology; the previous
+“6 h versus 3 h gate” wording was too broad. No winter `DatasetBundle.v2` has
+been persisted; status is `PARTIAL / BLOCKED_WITH_DECISION`.
 
 > 2026-08-18：新增 `src/arctic_route_data/causal_replay.py`（SourceRecord 全
 > revision 身份 + 可见性/支撑扫描），供 orchestrator `causal_replay_preflight.py`

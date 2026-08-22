@@ -18,6 +18,14 @@ Last Verified: 2026-08-21
 
 # 工作包 A 变更记录
 
+## Unreleased - Winter source validation（2026-08-22 13:03 +08:00）
+
+- 只读确认 NCEI 2026-02 Grid 4 direct/THREDDS 对象仍缺失；未修改采集代码或缓存。
+- 官方 C3S CARRA catalogue 已证明目标月、East Arctic domain、3 h analysis 和
+  wind/temperature/visibility 可用；production adapter 仍为 proposal，尚未批准或下载。
+- 澄清 cadence：有记录时 `nominal_interval_hours` 优先，正式 bundle 已接受 3 h/6 h；
+  零记录诊断中的 3 h 是 metadata-free fallback，不是对 NCEI 6 h 的必然拒绝。
+
 ## Unreleased - 2026-08-18（Causal Replay 支撑）
 
 - `causal_replay.py`：SourceRecord 增加 ingest_time/version/checksum
