@@ -8,7 +8,10 @@ import pytest
 from arctic_route_data.curvilinear import regrid_nearest_curvilinear
 
 
-def _make_native(size: int = 21, spacing_km: float = 6.0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _make_native(
+    size: int = 21,
+    spacing_km: float = 6.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     # approximate regular grid around (70N, 40E) used as a "curvilinear" native grid
     lat0, lon0 = 70.0, 40.0
     dlat = spacing_km / 111.195

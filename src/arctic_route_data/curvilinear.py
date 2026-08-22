@@ -29,12 +29,20 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 
-def _haversine_km(lat1: np.ndarray, lon1: np.ndarray, lat2: np.ndarray, lon2: np.ndarray) -> np.ndarray:
+def _haversine_km(
+    lat1: np.ndarray,
+    lon1: np.ndarray,
+    lat2: np.ndarray,
+    lon2: np.ndarray,
+) -> np.ndarray:
     r_lat1 = np.radians(lat1)
     r_lat2 = np.radians(lat2)
     dlat = r_lat2 - r_lat1
     dlon = np.radians(lon2 - lon1)
-    a = np.sin(dlat / 2.0) ** 2 + np.cos(r_lat1) * np.cos(r_lat2) * np.sin(dlon / 2.0) ** 2
+    a = (
+        np.sin(dlat / 2.0) ** 2
+        + np.cos(r_lat1) * np.cos(r_lat2) * np.sin(dlon / 2.0) ** 2
+    )
     return 2.0 * 6371.0088 * np.arcsin(np.sqrt(a))
 
 

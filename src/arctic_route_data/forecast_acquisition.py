@@ -42,6 +42,52 @@ NCEI_GFS_ANALYSIS_THREDDS_ROOT = (
     "https://www.ncei.noaa.gov/thredds/fileServer/model-gfs-g4-anl-files"
 )
 
+# --- Reachability status for the NCEI GFS Grid 4 analysis direct-access layer ---
+#
+# Live probes (2026-08-22) showed:
+#   * NCEI archive `grid-004-0.5-degree/analysis/` root returns `NoSuchKey`
+#     (the whole direct-access path was withdrawn during NCEI cloud migration);
+#   * the THREDDS `model-gfs-g4-anl-files` dataset scan exposes no month
+#     subdirectories for the target window;
+#   * NOMADS retains only a rolling recent window (historical cycles return 403).
+# The `gfs_4_{date}_{cycle}_{step}.grb2` naming used here is still correct and is
+# identical to the convention already used by A's nine complete rows; the failure
+# is source-object resolution, not a malformed URL.
+#
+# Status vocabulary (used by explicit gates instead of silent generic errors):
+#   DIRECT_BLOCKED          - exact direct object 404/403/NoSuchKey; not usable now.
+#   OFFLINE_ORDER_CANDIDATE - NCEI HAS (Historical Archive System) order path.
+#   AVAILABLE_RECENT        - NOMADS rolling window; usable for recent cycles only.
+class NceiReachability(StrEnum):
+    DIRECT_BLOCKED = "DIRECT_BLOCKED"
+    OFFLINE_ORDER_CANDIDATE = "OFFLINE_ORDER_CANDIDATE"
+    AVAILABLE_RECENT = "AVAILABLE_RECENT"
+
+
+# NOMADS recently-published GFS 0.25-degree analysis base (rolling window only).
+# Historical cycles (e.g. 2026-02) are NOT available here (verified 403); this
+# base is therefore only a candidate for *recent* cycles, never a winter filler.
+NOMADS_GFS_RECENT_ANALYSIS_ROOT = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
+
+# Official offline recovery path for the missing winter window (human-order only).
+# NCEI HAS / archive order for GFS Grid 4 analysis (DSI 6182). Not a programmatic
+# adapter: requires operator identity and a new checkpointed ingest step.
+NCEI_HAS_ORDER_URL = "https://www.ncei.noaa.gov/access/metadata/landing-page/bin/iso?id=gov.noaa.ncdc%3AC00634"
+
+# Recommended alternative source for the three missing winter rows (proposal
+# A-WINTER-MET-001, pending approval). Requires a CDS personal access token,
+# dataset-terms acceptance, an approved A CARRA adapter, and grid-relative
+# wind (u/v) -> true-east/true-north rotation before normalization.
+#   C3S/ECMWF CARRA single levels: reanalysis-carra-single-levels
+#   DOI 10.24381/cds.713858f6, CC-BY-4.0, coverage through 2026-05-31.
+CARRA_DATASET_ID = "reanalysis-carra-single-levels"
+
+# AWS Open Data GFS 0.5-degree analysis mirror. NOT hardcoded as a dependency:
+# unreachable from this host (network timeout) and documented as a trailing
+# ~30-day window, so it cannot be assumed to hold 2026-02. Verified only after
+# connectivity changes.
+AWS_NOAA_GFS_BDP_PDS_ROOT = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
+
 
 @dataclass(frozen=True, slots=True)
 class Bounds:
@@ -562,10 +608,29 @@ class NativeForecastAcquirer:
         base_url = ncei_gfs_analysis_url(cycle)
         thredds_url = ncei_gfs_analysis_thredds_url(cycle)
         inventory_url = base_url + ".inv"
-        inventory_response = self.http.get(
-            inventory_url, timeout=self.request_timeout_seconds
-        )
-        inventory_response.raise_for_status()
+        try:
+            inventory_response = self.http.get(
+                inventory_url, timeout=self.request_timeout_seconds
+            )
+            inventory_response.raise_for_status()
+        except Exception as primary_error:
+            status = getattr(primary_error, "response", None)
+            code = getattr(status, "status_code", None)
+            # Explicit reachability gate: a missing direct object is not a generic
+            # failure. The NCEI archive `analysis/` path was withdrawn during
+            # cloud migration (root returns NoSuchKey; exact object 404); the only
+            # official recovery for the missing winter window is an HAS/archive
+            # order, not a corrected direct URL.
+            if code in (403, 404) or "NoSuchKey" in str(primary_error):
+                raise DataValidationError(
+                    "NCEI GFS Grid 4 analysis direct object unreachable "
+                    f"({NceiReachability.DIRECT_BLOCKED}); status={code}. "
+                    "The NCEI direct-access path was withdrawn during cloud "
+                    "migration. Use the HAS/archive order recovery path "
+                    f"({NceiReachability.OFFLINE_ORDER_CANDIDATE}): "
+                    f"{NCEI_HAS_ORDER_URL}"
+                ) from primary_error
+            raise
         inventory_text = inventory_response.text
         inventory_bytes = bytes(getattr(inventory_response, "content", b""))
         if not inventory_bytes:
@@ -1132,6 +1197,36 @@ def ncei_gfs_analysis_thredds_url(cycle: datetime) -> str:
         f"{NCEI_GFS_ANALYSIS_THREDDS_ROOT}/{cycle:%Y%m}/{cycle:%Y%m%d}/"
         f"gfs_4_{cycle:%Y%m%d_%H00}_000.grb2"
     )
+
+
+def nomads_recent_analysis_url(cycle: datetime, forecast_hour: int = 0) -> str:
+    """NOMADS recent-window GFS 0.25-degree analysis object name.
+
+    NOMADS uses a different naming convention from NCEI archive:
+    ``gfs.t{HH}z.pgrb2.0p25.f{fff}`` versus NCEI ``gfs_4_{date}_{HHMM}_000.grb2``.
+    This helper is provided so a future recent-cycle path can reuse the same
+    cycle identity without hard-coding the format mismatch. It does NOT cover
+    historical winter cycles (verified 403); use it only for ``AVAILABLE_RECENT``.
+    """
+    cycle = ensure_utc(cycle, field="cycle")
+    return (
+        f"{NOMADS_GFS_RECENT_ANALYSIS_ROOT}/gfs.{cycle:%Y%m%d}/"
+        f"{cycle:%H}/atmos/gfs.t{cycle:%H}z.pgrb2.0p25.f{forecast_hour:03d}"
+    )
+
+
+def gfs_naming_bridges() -> dict[str, str]:
+    """Documented mapping between NCEI archive and NOMADS object naming.
+
+    Pure reference helper (no I/O); keeps the two conventions explicit so the
+    reachability gate and any future adapter stay aligned. Not invoked at runtime
+    for the winter gap, because NOMADS does not serve 2026-02 (DIRECT_BLOCKED).
+    """
+
+    return {
+        "ncei": "gfs_4_{YYYYMMDD}_{HHMM}_000.grb2",
+        "nomads": "gfs.t{HH}z.pgrb2.0p25.f{fff}",
+    }
 
 
 def ncei_inventory_ranges(
