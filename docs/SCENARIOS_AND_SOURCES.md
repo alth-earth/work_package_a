@@ -73,9 +73,9 @@ hard-mask 语义。稳定演示仍按当前合同准备 12 类输入，但可以
 
 | `data_type` | 主要来源/派生 | 关键语义 | 画像 |
 |---|---|---|---|
-| `wind_field` | GFS/NCEI | 真东/真北，`m s-1` | 必需 |
-| `temperature` | GFS/NCEI | 2 m 温度，K | 必需 |
-| `visibility` | GFS/NCEI | m | 必需 |
+| `wind_field` | GFS/NCEI（主）/ C3S CARRA（冬季补采） | 真东/真北，`m s-1` | 必需 |
+| `temperature` | GFS/NCEI（主）/ C3S CARRA（冬季补采） | 2 m 温度，K | 必需 |
+| `visibility` | GFS/NCEI（主）/ C3S CARRA（冬季补采） | m | 必需 |
 | `wave` | Copernicus | 波向 from true north clockwise，圆周插值 | 必需 |
 | `ocean_current` | Copernicus | 含潮总流优先；detided 显式后备；禁止相加 | 必需 |
 | `water_level` | Copernicus | 海面高度，m | 必需 |
@@ -87,6 +87,8 @@ hard-mask 语义。稳定演示仍按当前合同准备 12 类输入，但可以
 | `land_sea_mask` | GEBCO elevation 确定性派生 | 表面分类，不是完整可通航 mask | 必需 |
 | `bathymetry` | GEBCO 2026 | positive-up；研究层 | 可选 |
 | `long_term_restricted_area` | EMODnet 分类 WFS 证据 | information；禁止自动 hard-mask | 可选 |
+
+> 多源说明（2026-08-24 补充）：`wind_field`/`temperature`/`visibility` 在规格层（`specs.DataTypeSpec.source_families`）同时登记了规范化来源键 `"noaa_gfs"`（主，NOAA GFS/NOMADS）与 `"c3s_carra"`（C3S CARRA 东域再分析）。CARRA 为冬季补采源，依据提案 **A-WINTER-MET-001**（2026-08-22 批准），仅覆盖特罗姆瑟→伊斯峡湾窗口 2026-02-15..02-21，目前尚未发布进 A 流水线（需 CDS 令牌 + eccodes），其变量名/单位由 `carra_acquisition.py:CARRA_DATA_TYPE_TO_API_VARIABLES` 保证与上述一致。`source_families` 不影响既有 `source_family`（人读标签）比较逻辑。
 
 正式 A–B–C 主线 bundle 固定为恰好 12 类必需层；可选层单独采集和报告，失败不阻塞基线。
 

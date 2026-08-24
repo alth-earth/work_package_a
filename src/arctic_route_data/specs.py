@@ -1,4 +1,21 @@
-"""Canonical variable registry for all data types in the supplied acquisition package."""
+"""Canonical variable registry for all data types in the supplied acquisition package.
+
+Source-family naming convention
+-------------------------------
+``source_family`` is a **human-readable** label (single canonical source), while
+``source_families`` is the **normalized-key** tuple used by the provenance and
+legacy-publishing layers (see ``issue_time.py`` and ``legacy_downloaders.py``).
+The two namespaces are intentionally separated so that ``specs.py`` stays the
+human-readable SSOT and the normalized keys stay stable for code-level checks.
+
+Normalized keys (must match ``LegacyDownloaderSpec.source_family`` / issue-time logic):
+    "noaa_gfs"           -> NOAA GFS / NOMADS (dynamic weather)
+    "copernicus_marine"  -> Copernicus Marine (wave, ocean, ice, etc.)
+    "osi_saf_thredds"    -> OSI SAF via MET Norway THREDDS
+    "c3s_carra"          -> C3S CARRA (east domain) reanalysis, winter fill-in
+    "gebco"              -> GEBCO bathymetry / derived land-sea mask
+    "emodnet"            -> EMODnet Human Activities (legal restrictions)
+"""
 
 from __future__ import annotations
 
@@ -19,8 +36,22 @@ class DataTypeSpec:
     name: str
     category: DataCategory
     variables: tuple[VariableSpec, ...]
+    # Human-readable canonical source label (single source).
     source_family: str
     allow_single_variable_fallback: bool = False
+    # Normalized-key tuple of ALL allowed source families for this data type.
+    # Defaults to ``(source_family,)`` when not explicitly provided so existing
+    # single-source specs need no change. Carries the same normalized keys used
+    # by ``issue_time.py`` and ``legacy_downloaders.py``. Placed AFTER
+    # ``allow_single_variable_fallback`` so that existing positional callers
+    # (e.g. ``DataTypeSpec(..., source_family, allow_single_variable_fallback)``)
+    # keep their argument positions intact.
+    source_families: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.source_families:
+            # frozen + slots: use object.__setattr__ to set the field post-init.
+            object.__setattr__(self, "source_families", (self.source_family,))
 
 
 DATA_TYPE_SPECS: dict[str, DataTypeSpec] = {
@@ -123,6 +154,13 @@ DATA_TYPE_SPECS: dict[str, DataTypeSpec] = {
         (VariableSpec("sea_surface_height", ("zos", "ssh", "water_level"), "m"),),
         "Copernicus Marine",
     ),
+    # wind_field / temperature / visibility are dual-sourced:
+    #   primary : "noaa_gfs"  (NOAA GFS / NOMADS)        -- mainline dynamic weather
+    #   winter  : "c3s_carra" (C3S CARRA east-domain)    -- reanalysis fill-in
+    # Winter fill-in approved via proposal A-WINTER-MET-001 (2026-08-22). CARRA covers
+    # 2026-02-15..02-21 for the tromso->isfjorden window only and is NOT yet published
+    # into the A pipeline (requires CDS token + eccodes); see ``carra_acquisition.py``.
+    # Identical variables/units are guaranteed by that module.
     "wind_field": DataTypeSpec(
         "wind_field",
         DataCategory.DYNAMIC,
@@ -135,18 +173,21 @@ DATA_TYPE_SPECS: dict[str, DataTypeSpec] = {
             ),
         ),
         "NOAA GFS/NOMADS",
+        source_families=("noaa_gfs", "c3s_carra"),
     ),
     "temperature": DataTypeSpec(
         "temperature",
         DataCategory.DYNAMIC,
         (VariableSpec("air_temperature_2m", ("t2m", "2t", "TMP", "temperature"), "K"),),
         "NOAA GFS/NOMADS",
+        source_families=("noaa_gfs", "c3s_carra"),
     ),
     "visibility": DataTypeSpec(
         "visibility",
         DataCategory.DYNAMIC,
         (VariableSpec("visibility", ("vis", "VIS", "visibility"), "m"),),
         "NOAA GFS/NOMADS",
+        source_families=("noaa_gfs", "c3s_carra"),
     ),
     "bathymetry": DataTypeSpec(
         "bathymetry",

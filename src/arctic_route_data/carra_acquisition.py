@@ -61,6 +61,14 @@ CARRA_SOURCE_LABEL = "C3S/ECMWF CARRA Single-Levels (East domain)"
 # API (these are the names from the operator-validated request, NOT GRIB
 # shortNames). Verified 2026-08-22: the API rejects GRIB shortNames (e.g. "10u")
 # and requires these long names.
+#
+# Scope note: CARRA is one of the allowed source families for exactly three A data
+# types -- ``wind_field``, ``temperature`` and ``visibility`` -- and is registered
+# in ``specs.DataTypeSpec.source_families`` as the normalized key ``"c3s_carra"``
+# (alongside the primary ``"noaa_gfs"``). It is the winter fill-in source approved
+# by proposal A-WINTER-MET-001 (2026-08-22); operationally it covers only the
+# tromso->isfjorden window for 2026-02-15..02-21. Adding a new CARRA-backed data
+# type here MUST also extend ``specs.py`` source_families and the governance record.
 CARRA_DATA_TYPE_TO_API_VARIABLES: dict[str, tuple[str, ...]] = {
     "wind_field": ("10m_u_component_of_wind", "10m_v_component_of_wind"),
     "temperature": ("2m_temperature",),
