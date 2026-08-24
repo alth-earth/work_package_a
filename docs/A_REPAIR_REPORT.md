@@ -5,7 +5,7 @@
 > [README](../README.md) 与 [场景/14 类说明](SCENARIOS_AND_SOURCES.md)。
 
 日期：2026-08-11  
-范围：`/root/my_project/work_package_a`  
+范围：`${ARCTIC_ROUTE_ROOT}/work_package_a`  
 结论：A 已从“旧脚本兼容框架”提升为可真实采集 GFS 完整未来窗、可审计归档、可按
 模拟时钟向 B 提供一致窗口的工作包。0.3.1 又修正了“最低窗当成完整窗”、
 “单个 source snapshot 当成多源输入身份”、“源插件隐式可信”和“沿岸结构缺测
@@ -392,7 +392,7 @@ C 继续只消费 B 的 RiskFrame，不直接读 A。有效航速责任保持：
 ## 8. 验收命令
 
 ```bash
-cd /root/my_project/work_package_a
+cd ${ARCTIC_ROUTE_ROOT}/work_package_a
 make check
 make doctor
 git diff --check

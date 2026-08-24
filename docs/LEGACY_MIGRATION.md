@@ -70,7 +70,7 @@ ready 文件、raw payload 和 sidecar。单独自报一个 `source_snapshot_id`
 `issue_time` 伪造 valid time。static 可由适配器明确提供有效时刻。
 
 ```bash
-ECCODES_DIR=/root/my_project/work_package_a/.mamba-env \
+ECCODES_DIR=${ARCTIC_ROUTE_ROOT}/work_package_a/.mamba-env \
   .mamba-env/bin/uv run --extra acquisition arctic-data legacy-run \
   --legacy-root "/path/to/获取数据/获取数据" \
   --data-root data \

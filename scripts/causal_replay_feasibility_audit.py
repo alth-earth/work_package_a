@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tomllib
 from datetime import UTC, datetime
@@ -22,6 +23,16 @@ from arctic_route_data.causal_replay import (
     load_manifest_records,
     run_causal_scan,
 )
+
+
+def _workspace_root() -> Path:
+    env = os.environ.get("ARCTIC_ROUTE_ROOT")
+    if env and Path(env).is_dir():
+        return Path(env)
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "arctic_route_contracts").is_dir():
+            return parent
+    return Path.home()
 
 
 def _parse_utc(value: str) -> datetime:
@@ -105,26 +116,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--demo-config",
         type=Path,
-        default=Path(
-            "/root/my_project/work_package_d/configs/demo_frozen_sources.json"
-        ),
+        default=_workspace_root() / "work_package_d" / "configs" / "demo_frozen_sources.json",
     )
     parser.add_argument(
         "--manifest",
         type=Path,
-        default=Path("/root/my_project/work_package_a/data/manifest/manifest.sqlite3"),
+        default=_workspace_root() / "work_package_a" / "data" / "manifest" / "manifest.sqlite3",
     )
     parser.add_argument(
         "--contracts-config-root",
         type=Path,
-        default=Path("/root/my_project/arctic_route_contracts/configs"),
+        default=_workspace_root() / "arctic_route_contracts" / "configs",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(
-            "/root/my_project/work_package_a/data/output/rc2-smoke/"
-            "causal-replay-feasibility.json"
+        default=(
+            _workspace_root() / "work_package_a" / "data" / "output" / "rc2-smoke"
+            / "causal-replay-feasibility.json"
         ),
     )
     parser.add_argument("--tick-hours", type=int, default=1)

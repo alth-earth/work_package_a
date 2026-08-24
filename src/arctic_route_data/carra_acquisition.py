@@ -23,7 +23,7 @@ Key facts validated by the 2026-08-22 single-frame probe (see
   ``compat="override"``.
 * Credentials are read from ``~/.cdsapirc`` or the ``CDSAPI_RC`` environment
   variable (the operator placed theirs at
-  ``/root/my_project/work_package_a/.cdsapirc``). The token is NEVER read into
+  ``${ARCTIC_ROUTE_ROOT}/work_package_a/.cdsapirc``). The token is NEVER read into
   this module, printed, or committed.
 
 Safety / scope:

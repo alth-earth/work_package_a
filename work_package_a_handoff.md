@@ -183,7 +183,7 @@ SCENARIO=murmansk_dikson_july_2026_retrospective_v1 make acquire-land-sea-mask
 ## 9. 工程演示验收
 
 ```bash
-cd /root/my_project/work_package_a
+cd ${ARCTIC_ROUTE_ROOT}/work_package_a
 make check
 make doctor
 ```

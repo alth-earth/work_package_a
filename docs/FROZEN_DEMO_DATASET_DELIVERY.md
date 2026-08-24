@@ -86,15 +86,15 @@
 
 ### 5.1 备份位置
 
-- 备份 1：`/root/my_project/frozen_demo_backup/tromso_isfjorden_aug2026/`
+- 备份 1：`${ARCTIC_ROUTE_ROOT}/frozen_demo_backup/tromso_isfjorden_aug2026/`
 - 备份 2：`/tmp/arctic_demo_backup/tromso_isfjorden_aug2026/`
 
 ### 5.2 恢复步骤
 
 ```bash
 # 以备份 1 为例；备份 2 同构
-BACKUP=/root/my_project/frozen_demo_backup/tromso_isfjorden_aug2026
-cd /root/my_project/work_package_a
+BACKUP=${ARCTIC_ROUTE_ROOT}/frozen_demo_backup/tromso_isfjorden_aug2026
+cd ${ARCTIC_ROUTE_ROOT}/work_package_a
 cp "$BACKUP/tromso_isfjorden_august_2026_demo_v1.bundle.json" data/output/bundles/
 cp "$BACKUP/tromso_isfjorden_august_2026_demo_v1.run-context.json" data/output/bundles/
 cp "$BACKUP/manifest.sqlite3" data/manifest/manifest.sqlite3
@@ -104,7 +104,7 @@ rm -rf data/ready/tromso_to_isfjorden_outer && cp -a "$BACKUP/tromso_to_isfjorde
 恢复后运行：
 
 ```bash
-cd /root/my_project/work_package_a && make doctor
+cd ${ARCTIC_ROUTE_ROOT}/work_package_a && make doctor
 ```
 
 `doctor` 必须返回 `errors: []`。随后用 `arctic-data replay` 复验 12 类覆盖，再进入 B→C→D。
@@ -114,8 +114,8 @@ cd /root/my_project/work_package_a && make doctor
 若演示现场连备份也丢失，可重新采集（需外网与 Copernicus 凭据）：
 
 ```bash
-cd /root/my_project/work_package_a
-export UV_CACHE_DIR=/root/my_project/work_package_a/.uv-cache2 UV_PYTHON_INSTALL_DIR=/root/my_project/work_package_a/.uv-python2
+cd ${ARCTIC_ROUTE_ROOT}/work_package_a
+export UV_CACHE_DIR=${ARCTIC_ROUTE_ROOT}/work_package_a/.uv-cache2 UV_PYTHON_INSTALL_DIR=${ARCTIC_ROUTE_ROOT}/work_package_a/.uv-python2
 arctic-data acquire-forecast --corridor tromso_to_isfjorden_outer \
   --contracts-config-root ../arctic_route_contracts/configs \
   --sources gfs copernicus gebco --types land_sea_mask ocean_current sea_ice_concentration \

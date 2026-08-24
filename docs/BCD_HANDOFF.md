@@ -3,14 +3,14 @@
 本文件只冻结依赖方向和 A 为下游提供的前置条件，不复制容易漂移的完整 Python
 dataclass。当前合同真源为：
 
-- 共享事实与运行身份：`/root/my_project/arctic_route_contracts/`；
+- 共享事实与运行身份：`${ARCTIC_ROUTE_ROOT}/arctic_route_contracts/`；
 - A→B：本仓库 [AB_INTERFACE.md](AB_INTERFACE.md) 与正式 `a.dataset-bundle.v2`；
-- B 当前实现与运行入口：`/root/my_project/work_package_b/README.md`；
+- B 当前实现与运行入口：`${ARCTIC_ROUTE_ROOT}/work_package_b/README.md`；
 - B 历史开发要求与旧 ZIP 审计：
-  `/root/my_project/work_package_b_handoff/工作包B-v2正式开发交接书.md`；
-- B→C：`/root/my_project/work_package_c/docs/BC_CONTRACT.md`、Python 模型和
+  `${ARCTIC_ROUTE_ROOT}/work_package_b_handoff/工作包B-v2正式开发交接书.md`；
+- B→C：`${ARCTIC_ROUTE_ROOT}/work_package_c/docs/BC_CONTRACT.md`、Python 模型和
   `risk-frame-v2.schema.json`；
-- C→D：`/root/my_project/work_package_c/docs/CD_CONTRACT.md`、Python 模型和
+- C→D：`${ARCTIC_ROUTE_ROOT}/work_package_c/docs/CD_CONTRACT.md`、Python 模型和
   `route-plan-v2.schema.json`。
 
 ## 1. 依赖方向和当前交付状态

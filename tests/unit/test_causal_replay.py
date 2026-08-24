@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,7 +15,18 @@ from arctic_route_data.causal_replay import (
     tick_scan,
 )
 
-MANIFEST = Path("/root/my_project/work_package_a/data/manifest/manifest.sqlite3")
+
+def _workspace_root() -> Path:
+    env = os.environ.get("ARCTIC_ROUTE_ROOT")
+    if env and Path(env).is_dir():
+        return Path(env)
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "arctic_route_contracts").is_dir():
+            return parent
+    return Path.home()
+
+
+MANIFEST = _workspace_root() / "work_package_a" / "data" / "manifest" / "manifest.sqlite3"
 MUR_ROUTE = "offshore_murmansk_to_offshore_dikson"
 TROMSO_ROUTE = "tromso_to_isfjorden_outer"
 

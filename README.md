@@ -16,6 +16,11 @@ Last Verified: 2026-08-22
 > - 原文归档：[README.archive-20260814-pre-governance.md](README.archive-20260814-pre-governance.md)。
 > - 改造原因：把快速导航与详细状态、历史验收和操作手册分离，降低人和 AI 误读旧状态的风险。
 
+> **路径约定（2026-08-24）**：本文件中 `${ARCTIC_ROUTE_ROOT}` 为工作区根占位符，
+> 指向包含各工作包目录（`arctic_route_contracts/`、`work_package_a/` 等）的公共根。
+> 解析优先级：环境变量 > 当前所在目录 > `$HOME`。完整定义见
+> `arctic_route_governance/README.md` 的"路径约定"章节。
+
 # 北极航线预测驱动动态规划系统：工作包 A
 
 ## Research Validation 定位（2026-08-21 23:18）
@@ -70,7 +75,7 @@ been persisted; status is `PARTIAL / BLOCKED_WITH_DECISION`.
 ## 快速校验
 
 ```bash
-cd /root/my_project/work_package_a
+cd ${ARCTIC_ROUTE_ROOT}/work_package_a
 make check
 make doctor
 ```

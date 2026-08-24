@@ -130,7 +130,7 @@
 ### 6.3 运行时环境
 
 ```bash
-cd /root/my_project/work_package_a
+cd ${ARCTIC_ROUTE_ROOT}/work_package_a
 export LD_LIBRARY_PATH="$PWD/.mamba-env/lib:$LD_LIBRARY_PATH"   # eccodes C 库
 export PATH="$PWD/.mamba-env/bin:$PATH"
 # 下载 CARRA 时另需：

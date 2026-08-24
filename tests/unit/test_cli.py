@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,16 @@ import pytest
 import arctic_route_data.cli as cli_module
 from arctic_route_data.cli import main
 from arctic_route_data.shared_context import load_shared_scenario_request
+
+
+def _workspace_root() -> Path:
+    env = os.environ.get("ARCTIC_ROUTE_ROOT")
+    if env and Path(env).is_dir():
+        return Path(env)
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "arctic_route_contracts").is_dir():
+            return parent
+    return Path.home()
 
 
 @pytest.mark.parametrize("corridor_flag", ["--corridor", "--scenario"])
@@ -47,7 +58,7 @@ def test_historical_window_requires_explicit_start(capsys):
     assert "必须显式指定 --start" in capsys.readouterr().err
 
 def test_shared_scenario_adapter_uses_corridor_as_manifest_route_id(capsys):
-    contracts_root = "/root/my_project/arctic_route_contracts/configs"
+    contracts_root = str(_workspace_root() / "arctic_route_contracts" / "configs")
     if not Path(contracts_root).is_dir():
         pytest.skip("shared contracts checkout is unavailable")
 
@@ -71,7 +82,7 @@ def test_shared_scenario_adapter_uses_corridor_as_manifest_route_id(capsys):
 
 
 def test_frozen_shared_scenario_can_select_horizon_from_candidate_route(capsys):
-    contracts_root = "/root/my_project/arctic_route_contracts/configs"
+    contracts_root = str(_workspace_root() / "arctic_route_contracts" / "configs")
     if not Path(contracts_root).is_dir():
         pytest.skip("shared contracts checkout is unavailable")
 
@@ -98,7 +109,7 @@ def test_frozen_shared_scenario_can_select_horizon_from_candidate_route(capsys):
 
 
 def test_frozen_shared_scenario_rejects_candidate_beyond_formal_cap():
-    contracts_root = "/root/my_project/arctic_route_contracts/configs"
+    contracts_root = str(_workspace_root() / "arctic_route_contracts" / "configs")
     if not Path(contracts_root).is_dir():
         pytest.skip("shared contracts checkout is unavailable")
 
@@ -114,7 +125,7 @@ def test_frozen_shared_scenario_rejects_candidate_beyond_formal_cap():
 def test_acquire_window_can_take_all_time_and_identity_from_shared_scenario(
     tmp_path, monkeypatch, capsys
 ):
-    contracts_root = "/root/my_project/arctic_route_contracts/configs"
+    contracts_root = str(_workspace_root() / "arctic_route_contracts" / "configs")
     if not Path(contracts_root).is_dir():
         pytest.skip("shared contracts checkout is unavailable")
     captured = {}
