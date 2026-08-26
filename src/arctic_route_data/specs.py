@@ -166,6 +166,19 @@ DATA_TYPE_SPECS: dict[str, DataTypeSpec] = {
         (VariableSpec("restricted_area", ("restricted_area",), None),),
         "EMODnet Human Activities",
     ),
+    "vessel_traffic": DataTypeSpec(
+        "vessel_traffic",
+        DataCategory.DYNAMIC,
+        (
+            VariableSpec(
+                "vessel_traffic_risk",
+                ("vessel_traffic_risk", "traffic_risk", "passability_risk"),
+                None,
+            ),
+        ),
+        "AIS-derived vessel traffic simulator",
+        True,
+    ),
 }
 
 

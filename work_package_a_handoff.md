@@ -212,3 +212,37 @@ make doctor
 - [冻结演示数据集交付说明](docs/FROZEN_DEMO_DATASET_DELIVERY.md)
 
 Git 提交与同步由项目负责人在本会话结束后手动执行，本 handoff 不再主动提出提交/推送建议。
+## 12. 航道通行情况模拟层交接补充
+
+本次在工作包 A 中补充了 `vessel_traffic` 可选动态层，用于接收航道通行情况模拟模型生成的
+NetCDF 输出。该层的主要服务对象是工作包 B 的综合风险预测模型，用来描述航道通航活跃程度、
+邻近船舶干扰和潜在拥挤风险。
+
+该层不改变 A 原有 12 类必需环境数据，不参与必需层完整性判定，也不替代任何官方海冰、气象、
+海洋或静态约束数据。A 侧只负责将其按统一格式登记到 ready/manifest 中，B 侧按可选因子读取。
+
+推荐导入命令：
+
+```bash
+make import-vessel-traffic
+```
+
+如通航情况模型输出目录不在默认位置，可显式指定：
+
+```bash
+arctic-data import-vessel-traffic --source-dir /path/to/model_input --data-root data
+```
+
+导入后的文件进入：
+
+```text
+data/ready/<route_id>/vessel_traffic/
+```
+
+manifest 中会记录 `data_type=vessel_traffic`、主变量 `vessel_traffic_risk`、时间字段、
+来源说明、校验信息和 `quality_flag=suspect`。这里使用 `suspect` 是为了明确该层属于模拟增强数据，
+而非权威实测 AIS 数据。
+
+补充该层的必要性在于：两条北极研究航线的连续历史 AIS 通航数据开放性较弱，部分历史接口需要
+额外授权，公开资料多为年度报告、航次统计或区域摘要，难以直接形成逐时逐网格模型输入。因此，
+通航情况模拟层可以在保持 A 数据体系稳定的前提下，为 B 提供更接近实时通航状态的训练与预测输入。

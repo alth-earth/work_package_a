@@ -419,3 +419,33 @@ source snapshot 或 raw payload/sidecar。缺少该能力、抛错、返回不�
 - 波向、矢量、分类层使用正确插值；
 - `source_valid_mask` 仅用于数据完整度，不直接用于导航硬掩膜；
 - 正式 RiskFrame 保留完整来源摘要、上下文和 `environment_speed_factor`。
+## 8. 可选通航情况层
+
+工作包 A 现在支持接收 `vessel_traffic` 可选动态层。该层由航道通行情况模拟模型生成，
+通过 `arctic-data import-vessel-traffic` 或 `make import-vessel-traffic` 导入 A 的
+ready/manifest 体系。
+
+该层的稳定主变量为：
+
+```text
+vessel_traffic_risk
+```
+
+变量取值范围为 0-1，表示航道通行状态对综合风险的相对影响强度。数值越高，表示对应网格
+附近的通航拥挤度、邻近船舶干扰或通航活跃程度越高。该变量面向工作包 B 的综合风险模型，
+不在工作包 A 中直接转化为航线规划结论。
+
+接口约定如下：
+
+- `data_type` 固定为 `vessel_traffic`；
+- `category` 为动态数据；
+- `quality_flag` 默认写为 `suspect`，表示该层为模拟增强数据；
+- `route_id` 使用 A/B/C 共享的航线标识；
+- `issue_time` 与 `valid_time` 必须保留；
+- B 侧应保留 `metadata.issue_time_evidence` 与 `metadata.traffic_model_role`；
+- 该层为可选输入，不参与 12 类必需环境数据完整性判定。
+
+采用该接口的必要性在于，连续历史 AIS 通航数据通常存在授权限制、时间窗口限制和开放程度不足
+的问题，公开报告又难以直接提供逐网格实时输入。通过将模拟通航情况以统一 NetCDF 与 manifest
+格式接入 A，可以在不破坏原有数据合同的前提下，为 B 的综合风险预测补充更接近实时通航场景的
+动态特征。

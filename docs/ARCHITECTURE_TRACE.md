@@ -128,3 +128,17 @@ A 只发布环境标准帧、来源证据、DatasetBundle，并适配共享 RunC
 - `work_package_c/docs/CD_CONTRACT.md`
 - `work_package_b/README.md`
 - `work_package_b_handoff/工作包B-v2正式开发交接书.md`
+## 补充：航道通行情况模拟层
+
+工作包 A 的主线仍以 12 类必需环境数据为基础。为衔接工作包 B 的综合风险预测需求，
+新增 `vessel_traffic` 可选动态层，用于接收航道通行情况模拟模型输出。
+
+该层在架构中的位置为：
+
+```text
+航道通行情况模拟模型 -> A import-vessel-traffic -> ready/manifest -> B 综合风险预测可选因子
+```
+
+该层只提供通航状态特征，不改变 A 的官方数据采集职责，也不改变 B/C 之间的正式风险与航线规划
+接口。由于历史 AIS 通航轨迹存在授权、时间窗口和公开程度限制，模拟层以统一 NetCDF 与 manifest
+形式进入系统，有助于保证后续综合风险模型在接收实时通航信息时拥有一致的数据结构。

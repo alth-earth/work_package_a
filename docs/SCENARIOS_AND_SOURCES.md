@@ -144,3 +144,23 @@ hard-mask 语义。稳定演示仍按当前合同准备 12 类输入，但可以
 - [时间政策](ISSUE_TIME_POLICY.md)
 - [共享 contracts](../../arctic_route_contracts/arctic_route_contracts_handoff.md)
 - [系统权威](../../ARCTIC_ROUTE_SYSTEM.md)
+## 9. 航道通行情况可选层
+
+`vessel_traffic` 是工作包 A 新增的可选动态数据层，用于接收航道通行情况模拟模型生成的
+NetCDF 数据，并将其纳入 A 既有的 ready/manifest 管理体系。该层不属于 12 类必需环境数据，
+不改变工作包 A 原有的数据完整性判定，也不替代任何官方环境数据源。
+
+| `data_type` | 来源 | 主变量 | 单位/范围 | 用途 |
+|---|---|---|---|---|
+| `vessel_traffic` | AIS 与公开通航统计校准的航道通行情况模拟模型 | `vessel_traffic_risk` | 0-1 | 为工作包 B 提供通航拥挤度、邻近船舶干扰和航道活跃程度等可选动态风险因子 |
+
+引入该层的原因是：两条北极研究航线的连续历史 AIS 通航轨迹难以直接、稳定、开放获取；
+部分历史 AIS 接口需要额外授权，公开资料又多以年度报告、航次统计或区域摘要形式发布，
+难以直接转化为逐时、逐网格的模型输入。因此，项目在不破坏官方环境数据体系的前提下，
+以通航情况模拟模型补齐 B 侧对“实时通航状态相似输入”的需求，并在 manifest 中默认标记为
+`suspect`，提示下游该层属于模拟增强数据而非权威实测 AIS 数据。
+
+该层导入后仍遵循 A 的统一规范：空间范围使用既有航线 `route_id`，时间字段写入
+`issue_time` 与 `valid_time`，文件进入 `data/ready/<route_id>/vessel_traffic/`，
+元数据进入 manifest。B 侧读取时应把它作为可选特征使用，若缺失不应导致 A 的 12 类必需层
+完整性失败。

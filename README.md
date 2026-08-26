@@ -45,3 +45,15 @@ make doctor
 
 `make check` 证明工程门禁，不证明真实 12 类长窗、科学有效性或导航适用性。正式交付必须
 另行保存 DatasetBundle、RunContext、source snapshot 和 doctor 证据。
+
+## 航道通行情况可选层
+
+工作包 A 已补充 `vessel_traffic` 可选动态数据层，用于接收航道通行情况模拟模型生成的
+NetCDF 文件，并将其统一导入 A 既有的 `ready/manifest` 数据体系。该层不改变原有 12 类
+必需环境数据，不参与 A 主线完整性判定；当该层存在时，工作包 B 可将
+`vessel_traffic_risk` 作为综合风险模型中的通航拥挤、邻近船舶干扰和航道活跃程度输入。
+
+由于两条北极研究航线的连续历史 AIS 通航轨迹难以直接开放获取，部分历史 AIS 接口需要额外
+授权，公开资料又多以年度报告、航次统计或区域摘要形式发布，因此项目采用“真实环境数据 +
+通航情况模拟层”的方式补齐 B 侧需要的动态通航风险输入。导入方法见
+[航道通行情况模拟数据接入说明](docs/VESSEL_TRAFFIC_INTEGRATION.md)。

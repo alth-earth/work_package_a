@@ -224,6 +224,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="严格解析的凭据 dotenv；仅允许 Copernicus 用户名/密码键",
     )
 
+    vessel_traffic = subparsers.add_parser(
+        "import-vessel-traffic",
+        help="把航道通行情况模拟模型输出导入 A 的 ready/manifest",
+    )
+    vessel_traffic.add_argument(
+        "--source-dir",
+        type=Path,
+        help="通航情况模型输出目录；默认读取本项目相邻 my_model 交付目录",
+    )
+    vessel_traffic.add_argument("--data-root", type=Path, default=Path("data"))
+    vessel_traffic.add_argument(
+        "--quality",
+        choices=[QualityFlag.SUSPECT.value, QualityFlag.DEGRADED.value],
+        default=QualityFlag.SUSPECT.value,
+        help="通航模拟层默认是 suspect；不允许标记为 good",
+    )
+    vessel_traffic.add_argument("--version", default="traffic-simulator-v1")
+
     doctor = subparsers.add_parser("doctor", help="校验 manifest、路径和 SHA-256")
     doctor.add_argument("--data-root", type=Path, default=Path("data"))
     doctor.add_argument("--allow-empty", action="store_true")
@@ -661,6 +679,20 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    if args.command == "import-vessel-traffic":
+        from arctic_route_data.vessel_traffic_integration import (
+            import_result_to_json,
+            import_vessel_traffic_model_outputs,
+        )
+
+        result = import_vessel_traffic_model_outputs(
+            source_dir=args.source_dir,
+            data_root=args.data_root,
+            quality_flag=QualityFlag(args.quality),
+            version=args.version,
+        )
+        print(import_result_to_json(result))
+        return 0 if not result.skipped else 1
     if args.command == "doctor":
         report = inspect_archive(args.data_root, allow_empty=args.allow_empty)
         print(json.dumps({
