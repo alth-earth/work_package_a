@@ -27,6 +27,14 @@ from arctic_route_data.normalization import netcdf_encoding, normalize_dataset, 
 from arctic_route_data.specs import DATA_TYPE_SPECS, get_data_type_spec
 from arctic_route_data.timeutils import ensure_utc, isoformat_utc, parse_utc
 
+# Most Copernicus dataset IDs use the ``cmems_`` prefix.  Arctic TOPAZ tidal
+# currents are the catalogue's explicit exception: its published dataset ID is
+# ``dataset-topaz6-arc-15min-3km-be``.  Keep this as an exact allow-list entry;
+# source_valid_mask provenance must not become a generic non-Copernicus bypass.
+_COPERNICUS_SOURCE_VALID_MASK_DATASET_ID_EXCEPTIONS = frozenset(
+    {"dataset-topaz6-arc-15min-3km-be"}
+)
+
 
 def sha256_file(path: str | Path) -> str:
     digest = hashlib.sha256()
@@ -359,7 +367,10 @@ def _validate_source_valid_mask_provenance(
         != checksum
     ):
         raise DataValidationError("source_valid_mask 的来源快照 SHA-256 绑定失败")
-    if not isinstance(dataset_id, str) or not dataset_id.startswith("cmems_"):
+    if not isinstance(dataset_id, str) or not (
+        dataset_id.startswith("cmems_")
+        or dataset_id in _COPERNICUS_SOURCE_VALID_MASK_DATASET_ID_EXCEPTIONS
+    ):
         raise DataValidationError(
             "source_valid_mask 必须绑定明确的 Copernicus dataset_id"
         )

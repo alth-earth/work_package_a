@@ -717,7 +717,136 @@ def test_total_current_is_preferred_and_detided_is_explicit_fallback(tmp_path):
         "dataset-topaz6-arc-15min-3km-be",
         "cmems_mod_arc_phy_anfc_6km_detided_PT1H-i",
     ]
+    assert calls[0]["dataset_part"] == "originalGrid"
+    assert calls[0]["minimum_x"] == pytest.approx(10.061772942655313)
+    assert calls[0]["maximum_x"] == pytest.approx(22.82503492010585)
+    assert calls[0]["minimum_y"] == pytest.approx(-14.22252380306316)
+    assert calls[0]["maximum_y"] == pytest.approx(-4.799411689070461)
+    assert "minimum_longitude" not in calls[0]
     assert result.records[0].metadata["current_component"] == "detided"
     assert result.records[0].metadata["tide_included"] is False
     assert result.records[0].metadata["source_combination_policy"].endswith("never_sum")
     assert "两者未相加" in result.warnings[0]
+
+
+def test_total_current_original_grid_preserves_curvilinear_coordinates_and_rotates(
+    tmp_path,
+):
+    calls = []
+
+    def open_dataset(**kwargs):
+        calls.append(kwargs)
+        dataset = xr.Dataset(
+            {
+                "vxo": (("time", "y", "x"), [[[1.0, 1.0]], [[1.0, 1.0]]]),
+                "vyo": (("time", "y", "x"), [[[0.0, 0.0]], [[0.0, 0.0]]]),
+            },
+            coords={
+                "time": [
+                    np.datetime64(T0.replace(tzinfo=None)),
+                    np.datetime64((T0 + timedelta(hours=1)).replace(tzinfo=None)),
+                ],
+                "x": [10.0, 11.0],
+                "y": [-7.0],
+                "longitude": (("y", "x"), [[-45.0, 0.0]]),
+                "latitude": (("y", "x"), [[75.0, 75.0]]),
+            },
+        )
+        dataset.vxo.attrs.update(
+            {
+                "units": "m s-1",
+                "standard_name": "sea_water_x_velocity",
+                # This mirrors the live originalGrid response: a mapping is
+                # referenced but its scalar CF mapping variable is absent.
+                "grid_mapping": "stereographic",
+            }
+        )
+        dataset.vyo.attrs.update(
+            {
+                "units": "m s-1",
+                "standard_name": "sea_water_y_velocity",
+                "grid_mapping": "stereographic",
+            }
+        )
+        return dataset
+
+    result = NativeForecastAcquirer(
+        tmp_path / "data", copernicus_open_dataset=open_dataset
+    ).acquire_copernicus(
+        route_id="route-a",
+        bounds=Bounds(10, 68, 22, 79),
+        start_time=T0,
+        horizon_hours=1,
+        data_types=("ocean_current",),
+        require_total_current=True,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["dataset_part"] == "originalGrid"
+    assert set(calls[0]).isdisjoint(
+        {"minimum_longitude", "maximum_longitude", "minimum_latitude", "maximum_latitude"}
+    )
+    record = result.records[0]
+    assert record.metadata["current_component"] == "total"
+    assert record.metadata["tide_included"] is True
+    assert record.metadata["query_mode"] == "projected"
+    assert record.metadata["query_bounds"] == {
+        "minimum_x": pytest.approx(10.061772942655313),
+        "maximum_x": pytest.approx(22.82503492010585),
+        "minimum_y": pytest.approx(-14.22252380306316),
+        "maximum_y": pytest.approx(-4.799411689070461),
+    }
+
+    snapshot_path = tmp_path / "data" / record.metadata["source_snapshot_relative_path"]
+    with xr.open_dataset(snapshot_path) as snapshot:
+        assert snapshot.longitude.dims == ("y", "x")
+        assert snapshot.latitude.dims == ("y", "x")
+        assert snapshot.vxo.attrs["standard_name"] == "sea_water_x_velocity"
+        assert snapshot.vyo.attrs["standard_name"] == "sea_water_y_velocity"
+        assert snapshot.attrs["projection"] == "polar_stereographic"
+        assert snapshot.attrs["straight_vertical_longitude_from_pole"] == -45.0
+        assert forecast_module.json.loads(snapshot.attrs["query_bounds"]) == {
+            "maximum_x": pytest.approx(22.82503492010585),
+            "maximum_y": pytest.approx(-4.799411689070461),
+            "minimum_x": pytest.approx(10.061772942655313),
+            "minimum_y": pytest.approx(-14.22252380306316),
+        }
+
+    with xr.open_dataset(tmp_path / "data" / record.relative_path) as published:
+        assert published.longitude.dims == ("y", "x")
+        assert published.latitude.dims == ("y", "x")
+        np.testing.assert_allclose(
+            published.ocean_current_u.isel(time=0), [[1.0, 2**-0.5]], atol=1e-12
+        )
+        np.testing.assert_allclose(
+            published.ocean_current_v.isel(time=0), [[0.0, -(2**-0.5)]], atol=1e-12
+        )
+        assert published.attrs["vector_rotation"] == (
+            "polar_stereographic_xy_to_true_east_north"
+        )
+
+
+def test_require_total_current_refuses_detided_fallback_before_publishing(tmp_path):
+    calls = []
+
+    def open_dataset(**kwargs):
+        calls.append(kwargs)
+        raise RuntimeError("total current unavailable")
+
+    acquirer = NativeForecastAcquirer(
+        tmp_path / "data", copernicus_open_dataset=open_dataset
+    )
+    with pytest.raises(forecast_module.DataValidationError, match="拒绝 detided fallback"):
+        acquirer.acquire_copernicus(
+            route_id="route-a",
+            bounds=Bounds(10, 68, 22, 79),
+            start_time=T0,
+            horizon_hours=1,
+            data_types=("ocean_current",),
+            require_total_current=True,
+        )
+
+    assert [call["dataset_id"] for call in calls] == [
+        "dataset-topaz6-arc-15min-3km-be"
+    ]
+    assert not list((tmp_path / "data").rglob("*.nc"))

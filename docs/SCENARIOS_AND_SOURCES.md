@@ -120,11 +120,13 @@ hard-mask 语义。稳定演示仍按当前合同准备 12 类输入，但可以
   CLI 通过；
 - 历史长窗：0.3.1 留有旧走廊、v1、9 类、1001 帧证据，只可审计/迁移；
 - 新来源 smoke：NCEI byte-range、GEBCO、EMODnet 和早期 neXtSIM 小窗已验证；
-- 当前缺口：主走廊恰好 12 类、168 h 的真实 DatasetBundle v2、RunContext、doctor 和
-  exact resolver 仍未形成完整证据；latest v2 Copernicus 与 total-with-tide 需复验；
-  2026-08-15 已另交付 `tromso_isfjorden_august_2026_demo_v1`（12 类/144 h 冻结演示数据，
-  `complete=true`）作为当前演示底座；
-- 真实 A→B→C 端到端仍未完成。
+- 2026-08-26 holdout 已形成新的真实 A→B→C 证据：A 使用 TOPAZ `originalGrid` 含潮总流
+  （145 条 current records，`current_component=total`、`tide_included=true`），B/C 在隔离
+  实验目录完成 145 帧风险与 12 条路线；该构件不是生产发布，也不改变冻结 M2 结论；
+- 2026-03-22～03-28 development window 已完成第二个独立严寒样本，优先复用已处理冰海筛选数据，
+  GFS 历史直链 404 已记录，气象三要素使用已批准 CARRA winter fallback；A 形成 145 条
+  `current_component=total`、`tide_included=true` 的含潮总流记录，B/C 在隔离实验目录完成 145 帧与 12 条路线。
+  两个窗口都执行 `TOTAL_ONLY_FAIL_CLOSED`，detided 不得进入正式 bundle。
 
 ### 7.3 稳定验收闸门（源自：SCENARIOS_AND_SOURCES_归档_20260815.md；实源主线补全后执行）
 
@@ -138,6 +140,19 @@ hard-mask 语义。稳定演示仍按当前合同准备 12 类输入，但可以
 5. 跨进程 exact resolver 从公共 API 恢复完全相同的记录和 payload attestation；
 6. doctor 对 ready/raw/sidecar/source snapshot 的路径、大小和 SHA-256 零错误；
 7. 可选层独立报告；任何 fixture 或小窗 smoke 均不得替代真实完整窗。
+
+### 7.4 Winter 含潮总流原生网格与退役规则（2026-08-26 02:20 +08:00）
+
+- 正式 current 首选固定为 `ARCTIC_ANALYSISFORECAST_PHY_TIDE_002_015` /
+  `dataset-topaz6-arc-15min-3km-be` 的 `originalGrid`；A 通过显式 projected `x/y` 查询
+  保留 TOPAZ 原生 2D 经纬度，不把规则经纬度重采样伪装成 native source。
+- `require_total_current=True` 是正式严寒窗口的硬门禁：服务不可用、变量不全或 provenance
+  不完整时直接失败；detided 仅允许在显式非正式 fallback 试验中使用，且不得与含潮流相加。
+- 2026-02-22～02-28 holdout 已通过 6 个分块的 total-only 获取；旧 canonical/实验
+  detided current payload、raw/source current snapshot 与 detided bundle 已在本轮闭环完成后按
+  `/root/my_project/.runtime/experiments/detided-retirement-20260826/cleanup-ledger-v2.json`
+  精确退役（4359 文件、1448 条 manifest rows、1,318,695,475 bytes），冻结备份目录只作历史保护，
+  不作为当前数据源。
 
 ## 8. 相关文档
 

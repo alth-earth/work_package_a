@@ -171,6 +171,18 @@ class CopernicusForecastSpec:
     current_component: str | None = None
     tide_included: bool | None = None
     derivation: str | None = None
+    dataset_part: str = "default"
+    query_mode: str = "geographic"
+
+
+TOPAZ_POLAR_STEREOGRAPHIC_PROJ4 = (
+    "+proj=stere +lon_0=-45 +lat_0=90 +k=1 +R=6378273"
+)
+TOPAZ_POLAR_STEREOGRAPHIC_LON_0_DEGREES = -45.0
+TOPAZ_POLAR_STEREOGRAPHIC_RADIUS_METRES = 6_378_273.0
+# ``originalGrid`` exposes x/y in 100-km grid units, rather than metres.
+TOPAZ_ORIGINAL_GRID_COORDINATE_UNIT_METRES = 100_000.0
+TOPAZ_TIDAL_CURRENT_ORIGINAL_GRID_DATASET_ID = "dataset-topaz6-arc-15min-3km-be"
 
 
 COPERNICUS_FORECAST_SPECS: dict[str, CopernicusForecastSpec] = {
@@ -189,6 +201,8 @@ COPERNICUS_FORECAST_SPECS: dict[str, CopernicusForecastSpec] = {
         0.25,
         current_component="total",
         tide_included=True,
+        dataset_part="originalGrid",
+        query_mode="projected",
     ),
     "water_level": CopernicusForecastSpec(
         "water_level",
@@ -248,6 +262,114 @@ COPERNICUS_DETIDED_CURRENT_FALLBACK = CopernicusForecastSpec(
 )
 
 GFS_DATA_TYPES = frozenset({"wind_field", "temperature", "visibility"})
+
+
+def _topaz_polar_stereographic_xy(
+    *, longitude_degrees: float, latitude_degrees: float
+) -> tuple[float, float]:
+    """Project one lon/lat point using the TOPAZ native-grid projection.
+
+    TOPAZ ``originalGrid`` uses a spherical north-polar stereographic grid.  A
+    local formula keeps the acquisition path independent of an optional
+    projection package while matching the official ``+proj=stere`` definition
+    supplied by the Copernicus catalogue.
+    """
+
+    if not math.isfinite(longitude_degrees) or not math.isfinite(latitude_degrees):
+        raise ValueError("TOPAZ 投影坐标必须是有限数值")
+    if not -90.0 <= latitude_degrees <= 90.0:
+        raise ValueError("TOPAZ 投影 latitude 必须位于 [-90, 90]")
+    latitude = math.radians(latitude_degrees)
+    longitude_delta = math.radians(
+        longitude_degrees - TOPAZ_POLAR_STEREOGRAPHIC_LON_0_DEGREES
+    )
+    rho = (
+        2.0
+        * TOPAZ_POLAR_STEREOGRAPHIC_RADIUS_METRES
+        * math.tan(math.pi / 4.0 - latitude / 2.0)
+        / TOPAZ_ORIGINAL_GRID_COORDINATE_UNIT_METRES
+    )
+    return (
+        rho * math.sin(longitude_delta),
+        -rho * math.cos(longitude_delta),
+    )
+
+
+def _topaz_projected_query_bounds(bounds: Bounds) -> dict[str, float]:
+    """Return a safe x/y rectangle for a geographic TOPAZ request bbox."""
+
+    # A geographic rectangle's transformed extrema are not always its four
+    # corners: its longitude span can cross the TOPAZ central meridian or a
+    # 90-degree axis.  Include those stationary longitudes so ``outside``
+    # really encloses the requested geographic bbox.
+    longitude_samples = {bounds.west, bounds.east}
+    for multiple in range(-4, 5):
+        candidate = TOPAZ_POLAR_STEREOGRAPHIC_LON_0_DEGREES + 90.0 * multiple
+        if bounds.west <= candidate <= bounds.east:
+            longitude_samples.add(candidate)
+    projected = tuple(
+        _topaz_polar_stereographic_xy(
+            longitude_degrees=longitude,
+            latitude_degrees=latitude,
+        )
+        for latitude in (bounds.south, bounds.north)
+        for longitude in sorted(longitude_samples)
+    )
+    x_values = tuple(point[0] for point in projected)
+    y_values = tuple(point[1] for point in projected)
+    return {
+        "minimum_x": min(x_values),
+        "maximum_x": max(x_values),
+        "minimum_y": min(y_values),
+        "maximum_y": max(y_values),
+    }
+
+
+def _copernicus_query_bounds(
+    spec: CopernicusForecastSpec, bounds: Bounds
+) -> dict[str, float]:
+    if spec.query_mode == "geographic":
+        return {
+            "minimum_longitude": bounds.west,
+            "maximum_longitude": bounds.east,
+            "minimum_latitude": bounds.south,
+            "maximum_latitude": bounds.north,
+        }
+    if spec.query_mode == "projected":
+        return _topaz_projected_query_bounds(bounds)
+    raise ValueError(
+        f"{spec.data_type} 使用了不支持的 Copernicus 查询模式: "
+        f"{spec.query_mode!r}"
+    )
+
+
+def _attach_topaz_original_grid_projection_metadata(
+    dataset: xr.Dataset, *, spec: CopernicusForecastSpec
+) -> None:
+    """Supply the documented TOPAZ CRS when the returned CF mapping is absent.
+
+    The TIDE ``originalGrid`` response has 2-D latitude/longitude and projected
+    velocity components, but the live service currently omits the scalar
+    ``stereographic`` mapping variable that its components reference.  This
+    exact acquisition spec is our authoritative product/part selection, so
+    preserve that projection explicitly for normalisation.  No other product
+    or dataset part receives an inferred central meridian.
+    """
+
+    if not (
+        spec.dataset_id == TOPAZ_TIDAL_CURRENT_ORIGINAL_GRID_DATASET_ID
+        and spec.dataset_part == "originalGrid"
+        and spec.query_mode == "projected"
+    ):
+        return
+    dataset.attrs.update(
+        {
+            "projection": "polar_stereographic",
+            "straight_vertical_longitude_from_pole": (
+                TOPAZ_POLAR_STEREOGRAPHIC_LON_0_DEGREES
+            ),
+        }
+    )
 
 
 def _with_copernicus_source_valid_mask(
@@ -787,6 +909,7 @@ class NativeForecastAcquirer:
         horizon_hours: int = 156,
         data_types: Iterable[str] = tuple(COPERNICUS_FORECAST_SPECS),
         mode: AcquisitionMode | str = AcquisitionMode.FROZEN_FORECAST,
+        require_total_current: bool = False,
     ) -> ForecastAcquisitionResult:
         acquisition_mode = AcquisitionMode(mode)
         requested_types = tuple(dict.fromkeys(data_types))
@@ -826,6 +949,7 @@ class NativeForecastAcquirer:
             if data_type == "ocean_current":
                 candidates = (preferred_spec, COPERNICUS_DETIDED_CURRENT_FALLBACK)
             failures: list[str] = []
+            query_bounds = _copernicus_query_bounds(preferred_spec, bounds)
             for spec in candidates:
                 if (
                     nextsim_source_dataset is not None
@@ -835,14 +959,22 @@ class NativeForecastAcquirer:
                     dataset = nextsim_source_dataset.copy(deep=False)
                     output_interval = spec.nominal_interval_hours
                     break
+                if (
+                    spec is not preferred_spec
+                    and data_type == "ocean_current"
+                    and require_total_current
+                ):
+                    raise DataValidationError(
+                        "require_total_current=True 时含潮总流首选源不可用；"
+                        "拒绝 detided fallback，未发布后备记录。"
+                        + (" 原因: " + " | ".join(failures) if failures else "")
+                    )
+                query_bounds = _copernicus_query_bounds(spec, bounds)
                 kwargs: dict[str, Any] = {
                     "dataset_id": spec.dataset_id,
-                    "dataset_part": "default",
+                    "dataset_part": spec.dataset_part,
                     "variables": list(spec.variables),
-                    "minimum_longitude": bounds.west,
-                    "maximum_longitude": bounds.east,
-                    "minimum_latitude": bounds.south,
-                    "maximum_latitude": bounds.north,
+                    **query_bounds,
                     "start_datetime": start,
                     "end_datetime": end,
                     "coordinates_selection_method": "outside",
@@ -895,6 +1027,13 @@ class NativeForecastAcquirer:
                 {
                     "copernicus_product": spec.product_id,
                     "copernicus_dataset_id": spec.dataset_id,
+                    "copernicus_dataset_part": spec.dataset_part,
+                    "query_mode": spec.query_mode,
+                    # NetCDF attributes cannot contain mappings.  The manifest
+                    # retains the structured form below, while the immutable
+                    # source snapshot records an equivalent canonical JSON
+                    # string.
+                    "query_bounds": json.dumps(query_bounds, sort_keys=True),
                     "source_snapshot_id": snapshot_id,
                     "acquisition_mode": acquisition_mode.value,
                     "source_fidelity": (
@@ -905,11 +1044,18 @@ class NativeForecastAcquirer:
                     ),
                 }
             )
+            if spec.query_mode == "projected":
+                dataset.attrs["query_projection"] = TOPAZ_POLAR_STEREOGRAPHIC_PROJ4
+            _attach_topaz_original_grid_projection_metadata(dataset, spec=spec)
             evidence = IssueTimeEvidence(
                 issue_time=retrieved_at,
                 method=IssueTimeMethod.CONSERVATIVE_RETRIEVAL,
                 authority="Copernicus Marine Data Store",
-                reference=f"copernicusmarine.open_dataset(dataset_id={spec.dataset_id!r})",
+                reference=(
+                    "copernicusmarine.open_dataset("
+                    f"dataset_id={spec.dataset_id!r}, "
+                    f"dataset_part={spec.dataset_part!r})"
+                ),
                 observed_at=retrieved_at,
                 raw_value=isoformat_utc(retrieved_at),
                 authoritative=False,
@@ -939,7 +1085,14 @@ class NativeForecastAcquirer:
                     "source_snapshot_id": snapshot_id,
                     "product_id": spec.product_id,
                     "dataset_id": spec.dataset_id,
-                    "dataset_part": "default",
+                    "dataset_part": spec.dataset_part,
+                    "query_mode": spec.query_mode,
+                    "query_bounds": query_bounds,
+                    "query_projection": (
+                        TOPAZ_POLAR_STEREOGRAPHIC_PROJ4
+                        if spec.query_mode == "projected"
+                        else None
+                    ),
                     "service": "selected_by_copernicusmarine",
                     "source_uri": (
                         f"https://data.marine.copernicus.eu/product/{spec.product_id}/description"
