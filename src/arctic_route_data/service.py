@@ -100,6 +100,7 @@ _DEFAULT_INTERVAL_HOURS: dict[str, float | None] = {
     "wind_field": 3.0,
     "temperature": 3.0,
     "visibility": 3.0,
+    "vessel_traffic": 3.0,
     "wave": 3.0,
     # ``prepare_window_for_b`` emits formal v2, so its metadata-free fallback
     # must itself be accepted by the formal cadence contract. Coarser legacy

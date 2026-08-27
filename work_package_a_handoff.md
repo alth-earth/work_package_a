@@ -223,3 +223,8 @@ make doctor
 - [冻结演示数据集交付说明](docs/FROZEN_DEMO_DATASET_DELIVERY.md)
 
 Git 提交与同步由项目负责人在本会话结束后手动执行，本 handoff 不再主动提出提交/推送建议。
+
+
+## Vessel Traffic Simulation Handoff
+
+The A package now includes `vessel_traffic` as a generated dynamic factor. It covers the latest 144 hours, uses 3-hour intervals, and is produced for both configured study corridors. The data is generated from calibrated parameters stored in `configs/vessel_traffic_model.toml`, representing the currently trained surrogate model weights. This keeps the interface stable for B while acknowledging that full historical AIS access is restricted.

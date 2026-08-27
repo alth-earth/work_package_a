@@ -161,3 +161,9 @@ hard-mask 语义。稳定演示仍按当前合同准备 12 类输入，但可以
 - [时间政策](ISSUE_TIME_POLICY.md)
 - [共享 contracts](../../arctic_route_contracts/arctic_route_contracts_handoff.md)
 - [系统权威](../../ARCTIC_ROUTE_SYSTEM.md)
+
+## Vessel traffic simulation addendum
+
+This branch adds `vessel_traffic` as a generated dynamic data type for the latest 144-hour Work Package A window. It is produced every 3 hours for both configured study corridors and exposes `traffic_density`, `traffic_count`, `traffic_risk`, and `traffic_confidence` through the same Work Package A frame contract as the environmental sources. The layer is required because complete historical AIS route traffic cannot reliably be fetched or redistributed with ordinary permissions, while Work Package B still needs a traffic-pressure input that resembles real-time route conditions.
+
+Detailed configuration, output variables, provenance notes, and A-to-B usage are documented in `docs/VESSEL_TRAFFIC_SIMULATION.md`.

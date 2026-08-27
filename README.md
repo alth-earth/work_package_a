@@ -82,3 +82,10 @@ make doctor
 
 `make check` 证明工程门禁，不证明真实 12 类长窗、科学有效性或导航适用性。正式交付必须
 另行保存 DatasetBundle、RunContext、source snapshot 和 doctor 证据。
+
+
+### Vessel traffic simulation layer
+
+This branch adds a generated `vessel_traffic` layer for the two study corridors. It is used when complete historical AIS traffic data cannot be redistributed or fetched with ordinary permissions. The layer reads calibrated parameters from `configs/vessel_traffic_model.toml`, generates the latest 144 hours at a 3-hour cadence, and exposes `traffic_density`, `traffic_count`, `traffic_risk` and `traffic_confidence` through the same Work Package A source contract used by the existing environmental datasets.
+
+The traffic layer is designed as an A-to-B handoff feature: Work Package B can request it as `vessel_traffic` together with the other dynamic and static factors, while existing A-package data collection and replay behaviour remains unchanged for all other data types.

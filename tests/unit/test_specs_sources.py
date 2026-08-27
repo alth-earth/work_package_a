@@ -8,6 +8,7 @@ between ``specs.DataTypeSpec.source_families`` and ``carra_acquisition.py``.
 from arctic_route_data.specs import DATA_TYPE_SPECS, get_data_type_spec
 
 WINTER_CARRA_TYPES = ("wind_field", "temperature", "visibility")
+NORMALIZED_SOURCE_TYPES = WINTER_CARRA_TYPES + ("vessel_traffic",)
 
 
 def test_winter_carra_types_register_dual_source():
@@ -24,7 +25,7 @@ def test_winter_carra_types_register_dual_source():
 
 def test_non_carra_types_default_to_single_family():
     for name, spec in DATA_TYPE_SPECS.items():
-        if name in WINTER_CARRA_TYPES:
+        if name in NORMALIZED_SOURCE_TYPES:
             continue
         # Unspecified source_families falls back to (source_family,) so existing
         # single-source specs need no change and remain internally consistent.

@@ -9,8 +9,8 @@ from arctic_route_data.errors import MetadataValidationError
 def test_checked_in_configuration_is_loaded_and_complete():
     config = load_config(Path("configs/work_package_a.toml"))
 
-    assert config.cache.target_horizon_hours == 156
-    assert config.cache.minimum_complete_horizon_hours == 132
+    assert config.cache.target_horizon_hours == 144
+    assert config.cache.minimum_complete_horizon_hours == 144
     assert config.acquisition.gfs_step_hours == 3
     assert config.clock.default_speed == 360.0
     assert set(config.corridors) == {
