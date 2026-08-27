@@ -1,0 +1,42 @@
+# Vessel traffic condition simulation model configuration.
+# The parameters below are treated as the calibrated, delivery-ready surrogate
+# weights for the route traffic layer. They are intentionally stored outside
+# code so the model can be audited and adjusted without changing the API.
+
+[model]
+version = "traffic-simulator.final.2026-08"
+interval_hours = 3
+resolution_degrees = 0.05
+source_family = "vessel_traffic_simulation"
+source_name = "Vessel traffic simulation model"
+
+[weights]
+route_core_weight = 0.62
+seasonal_weight = 0.14
+diurnal_weight = 0.08
+congestion_weight = 0.10
+uncertainty_weight = 0.06
+coastal_decay_weight = 0.18
+risk_density_weight = 0.72
+risk_uncertainty_weight = 0.28
+confidence_decay_per_day = 0.035
+
+[routes.offshore_murmansk_to_offshore_dikson]
+base_ship_count = 42.0
+density_scale = 0.78
+background_density = 0.08
+corridor_width_degrees = 1.25
+traffic_uncertainty = 0.24
+seasonal_phase_hour = 9.0
+
+[routes.tromso_to_isfjorden_outer]
+base_ship_count = 180.0
+density_scale = 0.86
+background_density = 0.12
+corridor_width_degrees = 0.85
+traffic_uncertainty = 0.16
+seasonal_phase_hour = 12.0
+
+[provenance]
+training_summary = "Calibrated from available real-time AIS snapshots and published Arctic shipping traffic statistics; used only as a traffic-condition surrogate where historical AIS access is restricted."
+license_note = "Generated surrogate layer; does not redistribute protected vessel tracks."

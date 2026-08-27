@@ -429,3 +429,8 @@ source snapshot 或 raw payload/sidecar。缺少该能力、抛错、返回不�
 - 波向、矢量、分类层使用正确插值；
 - `source_valid_mask` 仅用于数据完整度，不直接用于导航硬掩膜；
 - 正式 RiskFrame 保留完整来源摘要、上下文和 `environment_speed_factor`。
+
+
+## Vessel Traffic Handoff
+
+`vessel_traffic` is available as a dynamic Work Package A data type for the latest 144-hour window. It is generated at a 3-hour cadence and carries the variables `traffic_density`, `traffic_count`, `traffic_risk`, and `traffic_confidence`. This layer exists because complete historical AIS route traffic is difficult to obtain under ordinary access permissions. The generated traffic condition simulates real-time corridor traffic pressure for Work Package B risk modelling and keeps the same route identifiers and standard data-frame contract as other A-package inputs.

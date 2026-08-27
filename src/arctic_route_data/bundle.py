@@ -21,6 +21,7 @@ _FORMAL_CADENCE_HOURS: dict[str, frozenset[float | None]] = {
     "wind_field": frozenset({3.0, 6.0}),
     "temperature": frozenset({3.0, 6.0}),
     "visibility": frozenset({3.0, 6.0}),
+    "vessel_traffic": frozenset({3.0}),
     "wave": frozenset({3.0}),
     # Current A Copernicus publications are hourly. The coarser values in
     # service.py are legacy fallbacks only and must never enter a formal v2.

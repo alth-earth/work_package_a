@@ -38,10 +38,11 @@ from arctic_route_data.shared_context import (
     create_run_context_from_bundle,
     load_shared_scenario_request,
 )
-from arctic_route_data.sources import LocalArchiveSource
+from arctic_route_data.sources import CompositeDataSource, LocalArchiveSource
 from arctic_route_data.specs import DATA_TYPE_SPECS
 from arctic_route_data.static_acquisition import StaticLayerAcquirer
 from arctic_route_data.timeutils import parse_utc
+from arctic_route_data.vessel_traffic import VesselTrafficSimulationSource
 
 _MARKER = ".arctic-route-data-workspace"
 
@@ -339,8 +340,12 @@ def main(argv: list[str] | None = None) -> int:
             slow_frames_per_partition=config.cache.slow_frames_per_partition,
             dynamic_frames_per_partition=config.cache.dynamic_frames_per_partition,
         )
+        source = CompositeDataSource(
+            LocalArchiveSource(args.data_root),
+            VesselTrafficSimulationSource.from_config(corridors=config.corridors),
+        )
         service = WorkPackageA(
-            source=LocalArchiveSource(args.data_root),
+            source=source,
             clock=clock,
             cache=cache,
             history_hours=config.cache.history_hours,

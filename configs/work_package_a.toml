@@ -2,9 +2,9 @@
 max_memory_mb = 512
 slow_frames_per_partition = 256
 dynamic_frames_per_partition = 256
-history_hours = 48
-target_horizon_hours = 156
-minimum_complete_horizon_hours = 132
+history_hours = 144
+target_horizon_hours = 144
+minimum_complete_horizon_hours = 144
 
 [acquisition]
 gfs_step_hours = 3

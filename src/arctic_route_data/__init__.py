@@ -21,10 +21,15 @@ from arctic_route_data.models import (
 )
 from arctic_route_data.publisher import AcquisitionPublisher
 from arctic_route_data.service import CoverageReport, PreparedWindow, WorkPackageA
+from arctic_route_data.sources import CompositeDataSource, LocalArchiveSource
+from arctic_route_data.vessel_traffic import VesselTrafficSimulationSource
 
 __all__ = [
     "AcquisitionPublisher",
     "Bounds",
+    "CompositeDataSource",
+    "LocalArchiveSource",
+    "VesselTrafficSimulationSource",
     "CoverageReport",
     "DataCategory",
     "DatasetBundle",

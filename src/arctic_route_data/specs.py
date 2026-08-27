@@ -189,6 +189,18 @@ DATA_TYPE_SPECS: dict[str, DataTypeSpec] = {
         "NOAA GFS/NOMADS",
         source_families=("noaa_gfs", "c3s_carra"),
     ),
+    "vessel_traffic": DataTypeSpec(
+        "vessel_traffic",
+        DataCategory.DYNAMIC,
+        (
+            VariableSpec("traffic_density", ("traffic_density", "vessel_density"), "1"),
+            VariableSpec("traffic_count", ("traffic_count", "ship_count"), "1"),
+            VariableSpec("traffic_risk", ("traffic_risk", "navigation_traffic_risk"), "1"),
+            VariableSpec("traffic_confidence", ("traffic_confidence",), "1"),
+        ),
+        "Vessel traffic simulation model",
+        source_families=("vessel_traffic_simulation",),
+    ),
     "bathymetry": DataTypeSpec(
         "bathymetry",
         DataCategory.STATIC,
