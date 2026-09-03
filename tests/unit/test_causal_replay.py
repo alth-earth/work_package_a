@@ -208,7 +208,15 @@ def test_synthetic_causal_scan_window_boundaries() -> None:
     not MANIFEST.is_file(),
     reason="A manifest not present",
 )
-def test_real_scenario_a_scan_is_partial() -> None:
+def test_real_scenario_a_scan_is_fail_closed() -> None:
+    """The current archive must not be promoted to a causal-ready claim.
+
+    This is a read-only smoke over the local manifest.  The available archive
+    can legitimately be either partially ready or not ready at all (for
+    example when issue-time evidence is later than the historical replay), but
+    it must never report a fully feasible window without all formal support.
+    """
+
     records = load_manifest_records(str(MANIFEST), MUR_ROUTE)
     scan = run_causal_scan(
         records,
@@ -217,8 +225,9 @@ def test_real_scenario_a_scan_is_partial() -> None:
         target_bbox=(30.0, 67.5, 85.0, 75.0),
     )
     assert scan["total_ticks"] == 145
-    assert 0 < scan["ready_ticks"] < 145
-    assert scan["first_ready_tick"] is not None
+    assert 0 <= scan["ready_ticks"] < 145
+    assert scan["full_window_feasible"] is False
+    assert (scan["first_ready_tick"] is None) == (scan["ready_ticks"] == 0)
     assert scan["source_evidence_summary"]["visible_at_simulation_start"] == 1
 
 
@@ -226,7 +235,7 @@ def test_real_scenario_a_scan_is_partial() -> None:
     not MANIFEST.is_file(),
     reason="A manifest not present",
 )
-def test_real_scenario_b_scan_is_partial() -> None:
+def test_real_scenario_b_scan_is_fail_closed() -> None:
     records = load_manifest_records(str(MANIFEST), TROMSO_ROUTE)
     scan = run_causal_scan(
         records,
@@ -235,5 +244,6 @@ def test_real_scenario_b_scan_is_partial() -> None:
         target_bbox=(10.0, 68.5, 22.0, 79.5),
     )
     assert scan["total_ticks"] == 145
-    assert 0 < scan["ready_ticks"] < 145
-    assert scan["first_ready_tick"] is not None
+    assert 0 <= scan["ready_ticks"] < 145
+    assert scan["full_window_feasible"] is False
+    assert (scan["first_ready_tick"] is None) == (scan["ready_ticks"] == 0)
