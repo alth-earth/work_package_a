@@ -5,10 +5,10 @@ from __future__ import annotations
 import hashlib
 import math
 import tomllib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Mapping, Sequence
 
 import numpy as np
 import xarray as xr
@@ -16,7 +16,6 @@ import xarray as xr
 from arctic_route_data.config import CorridorSettings
 from arctic_route_data.models import DataCategory, ManifestRecord, QualityFlag, StandardDataFrame
 from arctic_route_data.timeutils import ensure_utc
-
 
 DATA_TYPE = "vessel_traffic"
 MEDIA_TYPE = "application/x-netcdf"
@@ -107,7 +106,7 @@ def _iter_times(start_time: datetime, end_time: datetime, interval_hours: int) -
 
 
 def _metadata_digest(route_id: str, valid_time: datetime, version: str) -> str:
-    payload = f"{route_id}|{valid_time.isoformat()}|{version}".encode("utf-8")
+    payload = f"{route_id}|{valid_time.isoformat()}|{version}".encode()
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -118,7 +117,9 @@ def _route_grid(corridor: CorridorSettings, resolution: float) -> tuple[np.ndarr
     return lons, lats
 
 
-def _distance_to_segment(lon: np.ndarray, lat: np.ndarray, start: Sequence[float], end: Sequence[float]) -> np.ndarray:
+def _distance_to_segment(
+    lon: np.ndarray, lat: np.ndarray, start: Sequence[float], end: Sequence[float]
+) -> np.ndarray:
     x1, y1 = float(start[0]), float(start[1])
     x2, y2 = float(end[0]), float(end[1])
     dx = x2 - x1
@@ -132,7 +133,13 @@ def _distance_to_segment(lon: np.ndarray, lat: np.ndarray, start: Sequence[float
     return np.hypot(lon - proj_x, lat - proj_y)
 
 
-def _build_dataset(*, route_id: str, corridor: CorridorSettings, valid_time: datetime, params: TrafficModelParameters) -> xr.Dataset:
+def _build_dataset(
+    *,
+    route_id: str,
+    corridor: CorridorSettings,
+    valid_time: datetime,
+    params: TrafficModelParameters,
+) -> xr.Dataset:
     route_params = params.routes.get(
         route_id,
         TrafficRouteParameters(60.0, 0.75, 0.10, 1.0, 0.22, 12.0),
@@ -147,7 +154,9 @@ def _build_dataset(*, route_id: str, corridor: CorridorSettings, valid_time: dat
     day_of_year = valid_time.timetuple().tm_yday
     seasonal = 0.5 + 0.5 * math.sin(2.0 * math.pi * (day_of_year - 172.0) / 365.25)
     diurnal = 0.5 + 0.5 * math.cos(2.0 * math.pi * (hour - route_params.seasonal_phase_hour) / 24.0)
-    deterministic_wave = 0.5 + 0.5 * np.sin((lon2d * 0.37 + lat2d * 0.21 + day_of_year * 0.13 + hour) * math.pi / 3.0)
+    deterministic_wave = 0.5 + 0.5 * np.sin(
+        (lon2d * 0.37 + lat2d * 0.21 + day_of_year * 0.13 + hour) * math.pi / 3.0
+    )
 
     density = (
         route_params.background_density
@@ -158,7 +167,11 @@ def _build_dataset(*, route_id: str, corridor: CorridorSettings, valid_time: dat
     )
     density = np.clip(density, 0.0, 1.0)
     uncertainty = np.clip(route_params.traffic_uncertainty * (1.0 - 0.45 * route_core), 0.03, 0.95)
-    risk = np.clip(params.risk_density_weight * density + params.risk_uncertainty_weight * uncertainty, 0.0, 1.0)
+    risk = np.clip(
+        params.risk_density_weight * density + params.risk_uncertainty_weight * uncertainty,
+        0.0,
+        1.0,
+    )
     confidence = np.clip(1.0 - uncertainty, 0.0, 1.0)
     traffic_count = density * route_params.base_ship_count
 
@@ -178,7 +191,10 @@ def _build_dataset(*, route_id: str, corridor: CorridorSettings, valid_time: dat
             "source_name": params.source_name,
             "training_summary": params.training_summary,
             "license_note": params.license_note,
-            "description": "Route-level generated vessel traffic condition layer for risk-model training and A-to-B handoff.",
+            "description": (
+                "Route-level generated vessel traffic condition layer for "
+                "risk-model training and A-to-B handoff."
+            ),
         },
     )
 
@@ -186,15 +202,27 @@ def _build_dataset(*, route_id: str, corridor: CorridorSettings, valid_time: dat
 class VesselTrafficSimulationSource:
     """Generate route-level traffic-condition frames on the same contract as A data."""
 
-    def __init__(self, *, corridors: Mapping[str, CorridorSettings], config_path: str | Path | None = None) -> None:
+    def __init__(
+        self, *, corridors: Mapping[str, CorridorSettings], config_path: str | Path | None = None
+    ) -> None:
         self.corridors = corridors
         self.params = _parse_parameters(config_path)
 
     @classmethod
-    def from_config(cls, *, corridors: Mapping[str, CorridorSettings], config_path: str | Path | None = None) -> "VesselTrafficSimulationSource":
+    def from_config(
+        cls, *, corridors: Mapping[str, CorridorSettings], config_path: str | Path | None = None
+    ) -> VesselTrafficSimulationSource:
         return cls(corridors=corridors, config_path=config_path)
 
-    def list_available(self, data_type: str, start_time: datetime, end_time: datetime, *, route_id: str, as_of: datetime) -> Sequence[ManifestRecord]:
+    def list_available(
+        self,
+        data_type: str,
+        start_time: datetime,
+        end_time: datetime,
+        *,
+        route_id: str,
+        as_of: datetime,
+    ) -> Sequence[ManifestRecord]:
         if data_type != DATA_TYPE or route_id not in self.corridors:
             return []
         as_of = ensure_utc(as_of, field="as_of")
@@ -204,7 +232,9 @@ class VesselTrafficSimulationSource:
             if valid_time <= as_of
         ]
 
-    def get_latest_before(self, data_type: str, target_time: datetime, *, route_id: str, as_of: datetime) -> ManifestRecord | None:
+    def get_latest_before(
+        self, data_type: str, target_time: datetime, *, route_id: str, as_of: datetime
+    ) -> ManifestRecord | None:
         available = self.list_available(
             data_type,
             target_time - timedelta(hours=self.params.interval_hours * 2),
@@ -214,14 +244,18 @@ class VesselTrafficSimulationSource:
         )
         return available[-1] if available else None
 
-    def get_bracketing(self, data_type: str, target_time: datetime, *, route_id: str, as_of: datetime) -> tuple[ManifestRecord | None, ManifestRecord | None]:
+    def get_bracketing(
+        self, data_type: str, target_time: datetime, *, route_id: str, as_of: datetime
+    ) -> tuple[ManifestRecord | None, ManifestRecord | None]:
         latest = self.get_latest_before(data_type, target_time, route_id=route_id, as_of=as_of)
         return latest, latest
 
     def can_load_record(self, record: ManifestRecord) -> bool:
         return record.data_type == DATA_TYPE and record.source == self.params.source_name
 
-    def load_frame(self, record: ManifestRecord, *, generation_id: int, as_of: datetime) -> StandardDataFrame:
+    def load_frame(
+        self, record: ManifestRecord, *, generation_id: int, as_of: datetime
+    ) -> StandardDataFrame:
         if not self.can_load_record(record):
             raise ValueError(f"Unsupported vessel traffic record: {record.data_id}")
         dataset = _build_dataset(
@@ -263,7 +297,9 @@ class VesselTrafficSimulationSource:
             quality_flag=QualityFlag.GOOD,
             metadata={
                 "source_family": self.params.source_family,
-                "source_snapshot_id": f"{self.params.source_family}-{self.params.version}-{time_key}",
+                "source_snapshot_id": (
+                    f"{self.params.source_family}-{self.params.version}-{time_key}"
+                ),
                 "publication_id": f"{self.params.version}-{route_id}",
                 "upstream_checksum": digest,
                 "upstream_size_bytes": 1,

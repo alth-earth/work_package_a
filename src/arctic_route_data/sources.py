@@ -11,7 +11,11 @@ from typing import Protocol
 
 import xarray as xr
 
-from arctic_route_data.errors import ChecksumMismatchError, DataNotFoundError, FutureInformationError
+from arctic_route_data.errors import (
+    ChecksumMismatchError,
+    DataNotFoundError,
+    FutureInformationError,
+)
 from arctic_route_data.ingestion import sha256_file
 from arctic_route_data.manifest import ManifestStore
 from arctic_route_data.models import ManifestRecord, StandardDataFrame
@@ -164,29 +168,45 @@ class CompositeDataSource:
     def __init__(self, *sources: DataSource) -> None:
         self.sources = tuple(sources)
 
-    def list_available(self, data_type: str, start_time: datetime, end_time: datetime, *, route_id: str, as_of: datetime) -> Sequence[ManifestRecord]:
+    def list_available(
+        self,
+        data_type: str,
+        start_time: datetime,
+        end_time: datetime,
+        *,
+        route_id: str,
+        as_of: datetime,
+    ) -> Sequence[ManifestRecord]:
         records: list[ManifestRecord] = []
         seen: set[str] = set()
         for source in self.sources:
-            for record in source.list_available(data_type, start_time, end_time, route_id=route_id, as_of=as_of):
+            for record in source.list_available(
+                data_type, start_time, end_time, route_id=route_id, as_of=as_of
+            ):
                 if record.data_id not in seen:
                     records.append(record)
                     seen.add(record.data_id)
         records.sort(key=lambda record: record.valid_time)
         return records
 
-    def get_latest_before(self, data_type: str, target_time: datetime, *, route_id: str, as_of: datetime) -> ManifestRecord | None:
+    def get_latest_before(
+        self, data_type: str, target_time: datetime, *, route_id: str, as_of: datetime
+    ) -> ManifestRecord | None:
         candidates = [
             record
             for source in self.sources
-            for record in [source.get_latest_before(data_type, target_time, route_id=route_id, as_of=as_of)]
+            for record in [
+                source.get_latest_before(data_type, target_time, route_id=route_id, as_of=as_of)
+            ]
             if record is not None
         ]
         if not candidates:
             return None
         return max(candidates, key=lambda record: record.valid_time)
 
-    def get_bracketing(self, data_type: str, target_time: datetime, *, route_id: str, as_of: datetime) -> tuple[ManifestRecord | None, ManifestRecord | None]:
+    def get_bracketing(
+        self, data_type: str, target_time: datetime, *, route_id: str, as_of: datetime
+    ) -> tuple[ManifestRecord | None, ManifestRecord | None]:
         before: list[ManifestRecord] = []
         after: list[ManifestRecord] = []
         for source in self.sources:
@@ -199,7 +219,9 @@ class CompositeDataSource:
         earliest_after = min(after, key=lambda record: record.valid_time) if after else None
         return latest_before, earliest_after
 
-    def load_frame(self, record: ManifestRecord, *, generation_id: int, as_of: datetime) -> StandardDataFrame:
+    def load_frame(
+        self, record: ManifestRecord, *, generation_id: int, as_of: datetime
+    ) -> StandardDataFrame:
         last_error: Exception | None = None
         for source in self.sources:
             can_load = getattr(source, "can_load_record", None)

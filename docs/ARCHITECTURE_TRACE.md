@@ -16,8 +16,10 @@
 | GFS 未来窗 | NOMADS cycle/lead + 完整末端支撑 | 0.3.1 真实 168 h + 合同测试 |
 | GFS 历史窗节省传输 | NCEI 6 h analysis、`.inv`、严格 HTTP Range；OA 入口失败时使用官方 THREDDS FileServer 且记录原因 | 2026-07-15 单周期真实 937,236 B smoke；两入口 Range 206/忽略 Range 拒绝测试 |
 | Copernicus 凭据安全 | 严格 dotenv parser、mode 600、不 shell-source | 空/半配置/非法键/权限测试 |
+| CARRA 凭据与历史窗 | 外部绝对 `.cdsapirc`、临时 `CDSAPI_RC`、UTC 3 h 边界、最大 216 h、East-domain 覆盖 | 环境恢复、权限、窗口、缓存损坏和发布测试；实源 smoke 单独记录 |
 | 三时间 UTC 且防未来 | models/manifest/source/service | issue/valid/ingest、future 和 revision 测试 |
 | 精确来源证据 | snapshot、request metadata、checksum/byte ranges | publisher、archive、doctor 测试 |
+| CARRA 原始缓存 | 请求摘要 + size + SHA-256；损坏隔离；`.part` 原子下载并绑定 source snapshot | 缓存命中/损坏重取/正式证据路径测试 |
 
 ## 2. 14 类注册和新增来源
 

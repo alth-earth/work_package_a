@@ -29,16 +29,14 @@ A 的阶段角色为 Environmental Data Acquisition。既有 `PreparedWindow` /
 `DatasetBundle.v2` 和 provenance 边界保持兼容；下一研究目标是建立真实冬季 12-type
 artifact。当前只有夏季正式证据，不能把通用海冰采集接口写成冬季验证已完成。
 
-Winter research has the February 2026 scenario plus eight newly acquired,
-provenance-complete Copernicus data types. The cached static land/sea mask also
-passes the explicit retrospective coverage diagnostic, so 9/12 rows are ready.
-Wind, temperature and visibility remain unpublished. The exact February NCEI
-direct paths are absent, while Round4 official-catalogue validation identifies
-C3S CARRA as a 3-hour, three-variable candidate pending source-policy approval,
-CDS credentials/terms, and a projection-aware wind-vector adapter. A's formal
-bundle already accepts record-declared 3 h or 6 h meteorology; the previous
-“6 h versus 3 h gate” wording was too broad. No winter `DatasetBundle.v2` has
-been persisted; status is `PARTIAL / BLOCKED_WITH_DECISION`.
+Winter research has validated C3S CARRA East-domain analysis fields for
+`wind_field`, `temperature` and `visibility`. A now exposes the public
+`acquire-carra` command for any registered corridor that passes the East-domain
+coverage checks and an explicit UTC, 3-hour-aligned historical window of at most
+216 hours. This is retrospective acquisition: it never creates a Contracts
+scenario, never claims `frozen_forecast`, and does not by itself qualify a
+DatasetBundle or B/C/D run. Formal downstream use still requires a versioned
+scenario and complete provenance/coverage validation.
 
 > 2026-08-18：新增 `src/arctic_route_data/causal_replay.py`（SourceRecord 全
 > revision 身份 + 可见性/支撑扫描），供 orchestrator `causal_replay_preflight.py`
@@ -79,6 +77,20 @@ cd ${ARCTIC_ROUTE_ROOT}/work_package_a
 make check
 make doctor
 ```
+
+独立 CARRA 采集示例（凭据必须是仓库外的绝对路径，POSIX 权限为 `0600`）：
+
+```bash
+uv run arctic-data acquire-carra \
+  --corridor tromso_to_isfjorden_outer \
+  --start 2026-02-15T00:00:00Z \
+  --end 2026-02-15T03:00:00Z \
+  --types wind_field temperature visibility \
+  --cdsapi-rc-file /external/secrets/.cdsapirc
+```
+
+缓存只在请求摘要、文件大小与 SHA-256 全部匹配时复用；正式发布会把已验证 GRIB
+绑定到 `source_snapshots/`，并以实际获取时刻作为非权威、保守的 `issue_time`。
 
 `make check` 证明工程门禁，不证明真实 12 类长窗、科学有效性或导航适用性。正式交付必须
 另行保存 DatasetBundle、RunContext、source snapshot 和 doctor 证据。

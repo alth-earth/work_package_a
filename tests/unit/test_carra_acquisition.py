@@ -13,19 +13,23 @@ validation step, not a CI test.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from arctic_route_data.carra_acquisition import (
-    CARRA_COVERAGE_END,
+    CARRA_MAX_HORIZON_HOURS,
     CARRA_SOURCE_LABEL,
     CARRA_SUPPORTED_DATA_TYPES,
     CarraAcquisition,
     CarraAcquisitionResult,
     _carra_request,
+    _issue_evidence_for,
     _target_grid,
     _wrap_longitude,
+    resolve_carra_window,
+    validate_cdsapi_rc_file,
 )
 from arctic_route_data.forecast_acquisition import Bounds
 
@@ -176,6 +180,20 @@ def _patch_frames(monkeypatch, driver, data_types):
             dt: _dataset_for(dt, lat=70.0, lon=15.0) for dt in data_types
         }
 
+    def fake_regrid(dataset, *, target_lon, target_lat):
+        import xarray as xr
+
+        return xr.Dataset(
+            {
+                name: xr.DataArray(
+                    np.ones((target_lat.size, target_lon.size), dtype="float64"),
+                    dims=("latitude", "longitude"),
+                    coords={"latitude": target_lat, "longitude": target_lon},
+                )
+                for name in dataset.data_vars
+            }
+        )
+
     class _DummyClient:
         def retrieve(self, *args, **kwargs):
             raise AssertionError("network must not be reached in unit tests")
@@ -185,6 +203,9 @@ def _patch_frames(monkeypatch, driver, data_types):
     )
     monkeypatch.setattr(
         "arctic_route_data.carra_acquisition._open_carra_frame", fake_open
+    )
+    monkeypatch.setattr(
+        "arctic_route_data.carra_acquisition._regrid_to_bounds", fake_regrid
     )
     monkeypatch.setattr(
         "arctic_route_data.carra_acquisition._cds_client", lambda: _DummyClient()
@@ -222,6 +243,9 @@ def test_acquire_dry_run_counts_frames(monkeypatch, driver, bounds):
     assert result.frames_published == 0
     assert result.published is False
     assert len(result.source_snapshot_ids) == 3
+    assert result.cycles_requested == 3
+    assert result.cache_hits == 0
+    assert result.downloaded_cycles == 3
     assert len(calls) == 3
     # Every cycle within coverage was requested.
     assert datetime(2026, 2, 15, 6, 0, tzinfo=UTC) in calls
@@ -234,9 +258,18 @@ def test_acquire_publish_true_invokes_publisher(monkeypatch, driver, bounds):
     published = []
 
     class FakePublisher:
-        def publish_dataset(self, dataset, *, source, version, issue_evidence,
-                            data_type, route_id, metadata=None):
-            published.append((data_type, route_id))
+        def publish_dataset(
+            self,
+            dataset,
+            *,
+            source,
+            version,
+            issue_evidence,
+            data_type,
+            route_id,
+            metadata=None,
+        ):
+            published.append((data_type, route_id, metadata))
             return f"snap-{data_type}"
 
     driver.publisher = FakePublisher()
@@ -250,6 +283,12 @@ def test_acquire_publish_true_invokes_publisher(monkeypatch, driver, bounds):
     assert result.frames_published == 6
     assert result.published is True
     assert len(published) == 6
+    for _, _, metadata in published:
+        snapshot = driver.data_root / metadata["source_snapshot_relative_path"]
+        assert snapshot.is_file()
+        assert snapshot.name == metadata["source_file"]
+        assert metadata["product_kind"] == "analysis"
+        assert "forecast_lead_hours" not in metadata
     # source_snapshot_ids recorded one per cycle (2 cycles).
     assert len(result.source_snapshot_ids) == 2
 
@@ -259,18 +298,143 @@ def test_acquire_rejects_nonpositive_horizon(driver):
         driver.acquire(start_time=datetime(2026, 2, 15, tzinfo=UTC), horizon_hours=0)
 
 
-def test_acquire_rejects_start_past_coverage(driver):
-    start = CARRA_COVERAGE_END + timedelta(days=1)
-    with pytest.raises(ValueError):
+def test_acquire_rejects_non_three_hour_horizon(driver):
+    with pytest.raises(ValueError, match="00/03/06"):
+        driver.acquire(start_time=datetime(2026, 2, 15, tzinfo=UTC), horizon_hours=1)
+
+
+def test_carra_window_enforces_alignment_cap_and_future():
+    start = datetime(2026, 2, 15, 0, tzinfo=UTC)
+    resolved = resolve_carra_window(
+        start_time=start,
+        end_time=start + timedelta(hours=6),
+        now=datetime(2026, 2, 16, tzinfo=UTC),
+    )
+    assert resolved.horizon_hours == 6
+    assert len(resolved.cycles) == 3
+    with pytest.raises(ValueError, match=str(CARRA_MAX_HORIZON_HOURS)):
+        resolve_carra_window(
+            start_time=start,
+            end_time=start + timedelta(hours=CARRA_MAX_HORIZON_HOURS + 3),
+            now=datetime(2026, 2, 20, tzinfo=UTC),
+        )
+    with pytest.raises(ValueError, match="未来"):
+        resolve_carra_window(
+            start_time=start,
+            end_time=start + timedelta(hours=3),
+            now=datetime(2026, 2, 15, 1, tzinfo=UTC),
+        )
+    with pytest.raises(ValueError, match="3 小时"):
+        resolve_carra_window(
+            start_time=start,
+            end_time=start + timedelta(hours=1),
+            now=datetime(2026, 2, 16, tzinfo=UTC),
+        )
+
+
+def test_carra_reuses_verified_raw_cache_and_quarantines_corruption(
+    monkeypatch, driver, tmp_path
+):
+    first_calls = _patch_frames(monkeypatch, driver, CARRA_SUPPORTED_DATA_TYPES)
+    start = datetime(2026, 2, 15, 0, tzinfo=UTC)
+    first = driver.acquire(start_time=start, horizon_hours=3)
+    assert first.cache_hits == 0
+    assert first.downloaded_cycles == 2
+    assert len(first_calls) == 2
+
+    second_calls = {}
+
+    def unexpected_retrieve(*, client, cycle, data_types, out_path):
+        second_calls[cycle] = out_path
+        raise AssertionError("verified cache should avoid a download")
+
+    monkeypatch.setattr(
+        "arctic_route_data.carra_acquisition._retrieve_carra_frame",
+        unexpected_retrieve,
+    )
+    second = driver.acquire(start_time=start, horizon_hours=3)
+    assert second.cache_hits == 2
+    assert second.downloaded_cycles == 0
+    assert second_calls == {}
+
+    payload = next((driver.data_root / "carra" / "_raw_grib").glob("*.grib"))
+    payload.write_bytes(b"GRIB-corrupt")
+    third_calls = _patch_frames(monkeypatch, driver, CARRA_SUPPORTED_DATA_TYPES)
+    third = driver.acquire(start_time=start, horizon_hours=3)
+    assert third.cache_hits == 1
+    assert third.downloaded_cycles == 1
+    assert len(third_calls) == 1
+    quarantined = list((driver.data_root / "carra" / "quarantine").rglob("*"))
+    assert quarantined
+
+
+def test_cdsapi_rc_environment_isolated_and_restored(monkeypatch, tmp_path):
+    rc = tmp_path / ".cdsapirc"
+    rc.write_text("url: https://example.invalid/api\nkey: redacted:token\n", encoding="utf-8")
+    rc.chmod(0o600)
+    monkeypatch.setenv("CDSAPI_RC", "original-rc")
+    monkeypatch.setenv("CDSAPI_URL", "original-url")
+    monkeypatch.setenv("CDSAPI_KEY", "original-key")
+    seen = {}
+
+    from arctic_route_data.carra_acquisition import cdsapi_rc_environment
+
+    with cdsapi_rc_environment(rc):
+        seen.update(
+            {
+                key: __import__("os").environ.get(key)
+                for key in ("CDSAPI_RC", "CDSAPI_URL", "CDSAPI_KEY")
+            }
+        )
+    assert seen == {"CDSAPI_RC": str(rc), "CDSAPI_URL": None, "CDSAPI_KEY": None}
+    import os
+
+    assert os.environ["CDSAPI_RC"] == "original-rc"
+    assert os.environ["CDSAPI_URL"] == "original-url"
+    assert os.environ["CDSAPI_KEY"] == "original-key"
+
+
+def test_cdsapi_rc_rejects_relative_and_overbroad_permissions(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    relative = tmp_path / ".cdsapirc"
+    relative.write_text("redacted", encoding="utf-8")
+    relative.chmod(0o600)
+    with pytest.raises(ValueError, match="绝对路径"):
+        validate_cdsapi_rc_file(Path(".cdsapirc"))
+    relative.chmod(0o644)
+    with pytest.raises(ValueError, match="group/world"):
+        validate_cdsapi_rc_file(relative)
+
+
+def test_carra_conservative_issue_time_is_retrieval_time():
+    cycle = datetime(2026, 2, 15, tzinfo=UTC)
+    observed = datetime(2026, 9, 3, 12, 30, tzinfo=UTC)
+    evidence = _issue_evidence_for(cycle, observed)
+    assert evidence.issue_time == observed
+    assert evidence.observed_at == observed
+    assert evidence.raw_value == "2026-09-03T12:30:00Z"
+
+
+def test_local_eccodes_failure_does_not_quarantine_verified_cache(
+    monkeypatch, driver
+):
+    _patch_frames(monkeypatch, driver, ("temperature",))
+    driver.data_types = ("temperature",)
+    start = datetime(2026, 2, 15, tzinfo=UTC)
+    driver.acquire(start_time=start, horizon_hours=3)
+    raw_root = driver.data_root / "carra" / "_raw_grib"
+    before = sorted(path.name for path in raw_root.iterdir())
+
+    def missing_runtime(*args, **kwargs):
+        raise RuntimeError("Cannot find the ecCodes library")
+
+    monkeypatch.setattr(
+        "arctic_route_data.carra_acquisition._open_carra_frame", missing_runtime
+    )
+    with pytest.raises(RuntimeError, match="ecCodes"):
         driver.acquire(start_time=start, horizon_hours=3)
-
-
-def test_acquire_stops_at_coverage_end(monkeypatch, driver):
-    _patch_frames(monkeypatch, driver, CARRA_SUPPORTED_DATA_TYPES)
-    # Start at coverage end; only that single cycle is in range.
-    result = driver.acquire(start_time=CARRA_COVERAGE_END, horizon_hours=72)
-    # 1 cycle x 3 data types = 3 processed frames.
-    assert result.frames_processed == 3
+    assert sorted(path.name for path in raw_root.iterdir()) == before
+    assert not (driver.data_root / "carra" / "quarantine").exists()
 
 
 def test_supported_data_types_constant():

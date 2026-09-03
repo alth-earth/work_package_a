@@ -88,7 +88,7 @@ hard-mask 语义。稳定演示仍按当前合同准备 12 类输入，但可以
 | `bathymetry` | GEBCO 2026 | positive-up；研究层 | 可选 |
 | `long_term_restricted_area` | EMODnet 分类 WFS 证据 | information；禁止自动 hard-mask | 可选 |
 
-> 多源说明（2026-08-24 补充）：`wind_field`/`temperature`/`visibility` 在规格层（`specs.DataTypeSpec.source_families`）同时登记了规范化来源键 `"noaa_gfs"`（主，NOAA GFS/NOMADS）与 `"c3s_carra"`（C3S CARRA 东域再分析）。CARRA 为冬季补采源，依据提案 **A-WINTER-MET-001**（2026-08-22 批准），仅覆盖特罗姆瑟→伊斯峡湾窗口 2026-02-15..02-21，目前尚未发布进 A 流水线（需 CDS 令牌 + eccodes），其变量名/单位由 `carra_acquisition.py:CARRA_DATA_TYPE_TO_API_VARIABLES` 保证与上述一致。`source_families` 不影响既有 `source_family`（人读标签）比较逻辑。
+> 多源说明（2026-09-03 更新）：`wind_field`/`temperature`/`visibility` 在规格层（`specs.DataTypeSpec.source_families`）同时登记了规范化来源键 `"noaa_gfs"`（主，NOAA GFS/NOMADS）与 `"c3s_carra"`（C3S CARRA 东域再分析）。公开 `acquire-carra` 入口支持 East domain 内已登记走廊、显式 UTC 三小时边界及不超过 216 h 的历史窗口。官方目录说明数据从 1991 年至今、按月更新、分析场每三小时一次；程序不复制容易过时的固定末端日期，实际缺失或尚未可用时次由 CDS 请求失败关闭。独立采集不会创建场景或获得下游正式资格。`source_families` 不影响既有 `source_family`（人读标签）比较逻辑。
 
 正式 A–B–C 主线 bundle 固定为恰好 12 类必需层；可选层单独采集和报告，失败不阻塞基线。
 

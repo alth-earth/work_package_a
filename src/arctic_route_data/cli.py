@@ -15,6 +15,10 @@ import numpy as np
 import xarray as xr
 
 from arctic_route_data.cache import PartitionedABCache
+from arctic_route_data.carra_acquisition import (
+    CARRA_SUPPORTED_DATA_TYPES,
+    CarraAcquisition,
+)
 from arctic_route_data.clock import SimulationClock
 from arctic_route_data.config import config_to_dict, load_config
 from arctic_route_data.doctor import inspect_archive
@@ -28,8 +32,11 @@ from arctic_route_data.forecast_acquisition import (
     resolve_acquisition_window,
 )
 from arctic_route_data.ingestion import IngestionPipeline
-from arctic_route_data.issue_time import IssueTimeEvidence, IssueTimeMethod, SourceIssueTimeResolver
-from arctic_route_data.legacy_downloaders import LEGACY_DOWNLOADERS, LegacyDownloaderRunner
+from arctic_route_data.issue_time import (
+    IssueTimeEvidence,
+    IssueTimeMethod,
+    SourceIssueTimeResolver,
+)
 from arctic_route_data.manifest import ManifestStore
 from arctic_route_data.models import QualityFlag
 from arctic_route_data.publisher import AcquisitionPublisher
@@ -42,7 +49,6 @@ from arctic_route_data.sources import CompositeDataSource, LocalArchiveSource
 from arctic_route_data.specs import DATA_TYPE_SPECS
 from arctic_route_data.static_acquisition import StaticLayerAcquirer
 from arctic_route_data.timeutils import parse_utc
-from arctic_route_data.vessel_traffic import VesselTrafficSimulationSource
 
 _MARKER = ".arctic-route-data-workspace"
 
@@ -225,6 +231,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="严格解析的凭据 dotenv；仅允许 Copernicus 用户名/密码键",
     )
 
+    carra = subparsers.add_parser(
+        "acquire-carra",
+        help="从 C3S/ECMWF CARRA 获取显式 UTC 3 小时窗口并正式发布",
+    )
+    carra.add_argument("--config", type=Path, default=Path("configs/work_package_a.toml"))
+    carra.add_argument("--data-root", type=Path, default=Path("data"))
+    carra.add_argument("--corridor", required=True, help="已登记的 A corridor ID")
+    carra.add_argument("--start", required=True, help="包含在窗口内的 UTC 起始时次")
+    carra.add_argument("--end", required=True, help="包含在窗口内的 UTC 结束时次")
+    carra.add_argument(
+        "--types",
+        nargs="+",
+        choices=CARRA_SUPPORTED_DATA_TYPES,
+        default=CARRA_SUPPORTED_DATA_TYPES,
+        help="CARRA 仅支持 wind_field、temperature、visibility",
+    )
+    carra.add_argument(
+        "--cdsapi-rc-file",
+        type=Path,
+        required=True,
+        help="外部 .cdsapirc 路径；不会复制或打印文件内容",
+    )
+    carra.add_argument(
+        "--summary-output",
+        type=Path,
+        help="可选任务摘要 JSON 输出；不包含凭据内容或凭据路径",
+    )
+
     doctor = subparsers.add_parser("doctor", help="校验 manifest、路径和 SHA-256")
     doctor.add_argument("--data-root", type=Path, default=Path("data"))
     doctor.add_argument("--allow-empty", action="store_true")
@@ -233,17 +267,20 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--workspace", type=Path, default=Path("data/demo-run"))
     demo.add_argument("--reset", action="store_true")
 
-    legacy = subparsers.add_parser(
-        "legacy-run", help="运行一个旧下载器并自动解析发布时间、拆帧和写 sidecar"
-    )
-    legacy.add_argument("--legacy-root", type=Path, required=True)
-    legacy.add_argument("--data-root", type=Path, default=Path("data"))
-    legacy.add_argument("--downloader", required=True, choices=sorted(LEGACY_DOWNLOADERS))
-    legacy.add_argument(
-        "--allow-conservative-retrieval",
-        action="store_true",
-        help="源站无权威发布时间时，用成功获取时刻作为安全上界并标为 suspect",
-    )
+    if os.environ.get("ARCTIC_ROUTE_PRODUCTION_PACKAGE") != "1":
+        from arctic_route_data.legacy_downloaders import LEGACY_DOWNLOADERS
+
+        legacy = subparsers.add_parser(
+            "legacy-run", help="运行一个旧下载器并自动解析发布时间、拆帧和写 sidecar"
+        )
+        legacy.add_argument("--legacy-root", type=Path, required=True)
+        legacy.add_argument("--data-root", type=Path, default=Path("data"))
+        legacy.add_argument("--downloader", required=True, choices=sorted(LEGACY_DOWNLOADERS))
+        legacy.add_argument(
+            "--allow-conservative-retrieval",
+            action="store_true",
+            help="源站无权威发布时间时，用成功获取时刻作为安全上界并标为 suspect",
+        )
     return parser
 
 
@@ -340,10 +377,14 @@ def main(argv: list[str] | None = None) -> int:
             slow_frames_per_partition=config.cache.slow_frames_per_partition,
             dynamic_frames_per_partition=config.cache.dynamic_frames_per_partition,
         )
-        source = CompositeDataSource(
-            LocalArchiveSource(args.data_root),
-            VesselTrafficSimulationSource.from_config(corridors=config.corridors),
-        )
+        replay_sources = [LocalArchiveSource(args.data_root)]
+        if "vessel_traffic" in args.types:
+            from arctic_route_data.vessel_traffic import VesselTrafficSimulationSource
+
+            replay_sources.append(
+                VesselTrafficSimulationSource.from_config(corridors=config.corridors)
+            )
+        source = CompositeDataSource(*replay_sources)
         service = WorkPackageA(
             source=source,
             clock=clock,
@@ -666,6 +707,50 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    if args.command == "acquire-carra":
+        config = load_config(args.config)
+        try:
+            corridor = config.corridors[args.corridor]
+        except KeyError:
+            supported = ", ".join(sorted(config.corridors))
+            parser.error(f"未知 corridor={args.corridor!r}；支持: {supported}")
+        start = _parse_explicit_utc(args.start, field="start")
+        end = _parse_explicit_utc(args.end, field="end")
+        bounds = Bounds(
+            west=corridor.bbox[0],
+            south=corridor.bbox[1],
+            east=corridor.bbox[2],
+            north=corridor.bbox[3],
+        )
+        result = CarraAcquisition(
+            route_id=corridor.corridor_id,
+            bounds=bounds,
+            data_types=tuple(args.types),
+            publish=True,
+            publisher=AcquisitionPublisher(args.data_root),
+            data_root=args.data_root,
+            cdsapi_rc_file=args.cdsapi_rc_file,
+        ).acquire_between(start_time=start, end_time=end)
+        summary = {
+            "schema_version": "a.carra-acquisition-summary.v1",
+            "status": "SUCCEEDED",
+            "corridor_id": corridor.corridor_id,
+            "requested_start": start.isoformat().replace("+00:00", "Z"),
+            "requested_end": end.isoformat().replace("+00:00", "Z"),
+            "horizon_hours": int((end - start).total_seconds() // 3600),
+            "data_types": list(args.types),
+            "cycles_requested": result.cycles_requested,
+            "cache_hits": result.cache_hits,
+            "downloaded_cycles": result.downloaded_cycles,
+            "frames_processed": result.frames_processed,
+            "frames_published": result.frames_published,
+            "source_snapshot_ids": list(result.source_snapshot_ids),
+            "raw_cache_relative_path": "carra/_raw_grib",
+        }
+        if args.summary_output is not None:
+            _atomic_json_output(args.summary_output, summary)
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
     if args.command == "doctor":
         report = inspect_archive(args.data_root, allow_empty=args.allow_empty)
         print(json.dumps({
@@ -678,6 +763,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "demo":
         return _run_demo(args.workspace.resolve(), reset=args.reset)
     if args.command == "legacy-run":
+        if os.environ.get("ARCTIC_ROUTE_PRODUCTION_PACKAGE") == "1":
+            parser.error("legacy-run is not available in the production package")
+        from arctic_route_data.legacy_downloaders import LegacyDownloaderRunner
+
         runner = LegacyDownloaderRunner(
             legacy_root=args.legacy_root,
             data_root=args.data_root,
@@ -712,6 +801,19 @@ def _atomic_json_output(path: Path, value: object) -> None:
         encoding="utf-8",
     )
     temporary.replace(destination)
+
+
+def _parse_explicit_utc(value: str, *, field: str) -> datetime:
+    """Parse an ISO-8601 timestamp while rejecting non-UTC offsets."""
+
+    text = value.strip()
+    try:
+        parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+    except ValueError as exc:
+        raise ValueError(f"{field} 不是合法 ISO-8601 时间: {value!r}") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError(f"{field} 必须显式使用 UTC 时区")
+    return parsed.astimezone(UTC)
 
 
 _COPERNICUS_ENV_KEYS = frozenset(

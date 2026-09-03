@@ -43,6 +43,74 @@ def test_acquire_cli_rejects_source_type_mismatch_before_network(
     assert exc_info.value.code == 2
 
 
+def test_carra_cli_rejects_non_utc_offset_before_network(tmp_path):
+    with pytest.raises(ValueError, match="必须显式使用 UTC"):
+        main(
+            [
+                "acquire-carra",
+                "--data-root",
+                str(tmp_path / "data"),
+                "--corridor",
+                "tromso_to_isfjorden_outer",
+                "--start",
+                "2026-02-15T03:00:00+03:00",
+                "--end",
+                "2026-02-15T06:00:00+03:00",
+                "--types",
+                "temperature",
+                "--cdsapi-rc-file",
+                str(tmp_path / ".cdsapirc"),
+            ]
+        )
+
+
+def test_carra_cli_writes_machine_summary(tmp_path, monkeypatch, capsys):
+    class FakeCarraAcquisition:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def acquire_between(self, **kwargs):
+            return SimpleNamespace(
+                cycles_requested=1,
+                cache_hits=1,
+                downloaded_cycles=0,
+                frames_processed=1,
+                frames_published=1,
+                source_snapshot_ids=("carra-test-snapshot",),
+            )
+
+    monkeypatch.setattr(cli_module, "CarraAcquisition", FakeCarraAcquisition)
+    summary = tmp_path / "job" / "carra-summary.json"
+    credential = tmp_path / ".cdsapirc"
+    assert (
+        main(
+            [
+                "acquire-carra",
+                "--data-root",
+                str(tmp_path / "data"),
+                "--corridor",
+                "tromso_to_isfjorden_outer",
+                "--start",
+                "2026-02-15T00:00:00Z",
+                "--end",
+                "2026-02-15T00:00:00Z",
+                "--types",
+                "temperature",
+                "--cdsapi-rc-file",
+                str(credential),
+                "--summary-output",
+                str(summary),
+            ]
+        )
+        == 0
+    )
+    stdout = json.loads(capsys.readouterr().out)
+    persisted = json.loads(summary.read_text(encoding="utf-8"))
+    assert persisted == stdout
+    assert persisted["cache_hits"] == 1
+    assert ".cdsapirc" not in summary.read_text(encoding="utf-8")
+
+
 def test_historical_window_requires_explicit_start(capsys):
     with pytest.raises(SystemExit) as exc_info:
         main(

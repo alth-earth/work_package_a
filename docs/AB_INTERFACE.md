@@ -148,10 +148,15 @@ provenance_complete, complete
 
 节奏解析优先级为：调用方显式 `expected_interval_hours` > 帧 metadata
 `nominal_interval_hours` > `service.py` 旧数据兼容后备。冻结预报 GFS 声明
-3 h、NCEI 历史分析声明 6 h、Copernicus wave 声明 3 h，当前 Arctic current/water/ice 原生产品
+3 h、NCEI 历史分析声明 6 h、CARRA East-domain 再分析声明 3 h、Copernicus wave 声明 3 h，当前 Arctic current/water/ice 原生产品
 声明 1 h。`current/water=6 h`、`海冰=24 h` 只是缺少 metadata 的旧帧
 后备，不是当前原生产品 cadence。同一窗口出现多个冲突声明时 A 拒绝隐式
 选择；B 若需更密帧，应在自己的时间处理层生成并记录模型版本。
+
+CARRA 的分析时次是 `valid_time`；没有权威逐帧发布时间证据时，A 使用成功获取时刻作为
+`CONSERVATIVE_RETRIEVAL` 的 `issue_time`，不得把历史分析时次冒充系统当时已知。独立
+`acquire-carra` 只发布 A records/manifest，不创建或修改 Contracts 场景，也不获得
+`frozen_forecast` 资格。
 
 ### 3.1 `DatasetBundle.v2`：一次 AB 输入的精确身份与覆盖证明
 

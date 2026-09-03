@@ -1,7 +1,12 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from arctic_route_data import PartitionedABCache, SimulationClock, WorkPackageA, WorkPackageAConfig
-from arctic_route_data.config import AcquisitionSettings, CacheSettings, ClockSettings, CorridorSettings
+from arctic_route_data.config import (
+    AcquisitionSettings,
+    CacheSettings,
+    ClockSettings,
+    CorridorSettings,
+)
 from arctic_route_data.vessel_traffic import VesselTrafficSimulationSource
 
 
@@ -40,7 +45,7 @@ def _config():
 
 def test_vessel_traffic_source_provides_144_hour_window():
     config = _config()
-    as_of = datetime(2026, 8, 6, 12, tzinfo=timezone.utc)
+    as_of = datetime(2026, 8, 6, 12, tzinfo=UTC)
     source = VesselTrafficSimulationSource.from_config(corridors=config.corridors)
 
     records = source.list_available(
@@ -65,7 +70,7 @@ def test_vessel_traffic_source_provides_144_hour_window():
 
 def test_vessel_traffic_integrates_with_work_package_a_bundle():
     config = _config()
-    as_of = datetime(2026, 8, 6, 12, tzinfo=timezone.utc)
+    as_of = datetime(2026, 8, 6, 12, tzinfo=UTC)
     source = VesselTrafficSimulationSource.from_config(corridors=config.corridors)
     package = WorkPackageA(
         source=source,
@@ -90,6 +95,5 @@ def test_vessel_traffic_integrates_with_work_package_a_bundle():
     assert frames[0].record.valid_time == as_of - timedelta(hours=144)
     assert frames[-1].record.valid_time == as_of
     assert all(
-        frame.record.metadata["source_family"] == "vessel_traffic_simulation"
-        for frame in frames
+        frame.record.metadata["source_family"] == "vessel_traffic_simulation" for frame in frames
     )
