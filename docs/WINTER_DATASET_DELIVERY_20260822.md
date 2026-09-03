@@ -114,7 +114,7 @@
 
 | 凭据文件 | 环境变量/指向 | 用途 |
 |---|---|---|
-| `work_package_a/.cdsapirc` | `CDSAPI_RC=<repo>/.cdsapirc`（权限 600） | CDS token，下载 CARRA |
+| 仓库外 `.cdsapirc` | `CDSAPI_RC=/external/private/.cdsapirc`（权限 600） | CDS token，下载 CARRA；不得复制进仓库或发行物 |
 | `work_package_a/.env.copernicus` | 内为 `export COPERNICUSMARINE_SERVICE_USERNAME/PASSWORD` | Copernicus Marine 账号，下载 TOPAZ/CMEMS/NEXTSIM |
 
 > 注意：`.env.copernicus` 是 `export KEY=VALUE` shell 风格，且 CDS 与 Copernicus Marine
@@ -134,7 +134,7 @@ cd ${ARCTIC_ROUTE_ROOT}/work_package_a
 export LD_LIBRARY_PATH="$PWD/.mamba-env/lib:$LD_LIBRARY_PATH"   # eccodes C 库
 export PATH="$PWD/.mamba-env/bin:$PATH"
 # 下载 CARRA 时另需：
-export CDSAPI_RC="$PWD/.cdsapirc"
+export CDSAPI_RC="/external/private/.cdsapirc"
 ```
 
 ### 6.4 关键命令

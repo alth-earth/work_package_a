@@ -79,7 +79,9 @@ NCEI_HAS_ORDER_URL = "https://www.ncei.noaa.gov/access/metadata/landing-page/bin
 # dataset-terms acceptance, an approved A CARRA adapter, and grid-relative
 # wind (u/v) -> true-east/true-north rotation before normalization.
 #   C3S/ECMWF CARRA single levels: reanalysis-carra-single-levels
-#   DOI 10.24381/cds.713858f6, CC-BY-4.0, coverage through 2026-05-31.
+#   DOI 10.24381/cds.713858f6, CC-BY-4.0.  The official catalogue describes
+#   coverage from 1991 to present with monthly updates; availability at the
+#   moving edge is deliberately decided by the CDS request, not a fixed date.
 CARRA_DATASET_ID = "reanalysis-carra-single-levels"
 
 # AWS Open Data GFS 0.5-degree analysis mirror. NOT hardcoded as a dependency:
